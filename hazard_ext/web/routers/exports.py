@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ...engine.core import EngineError
 from ...export.formula_xlsx import build_formula_workbook
 from ...engine.applied import to_face
+from ...export.curves_xlsx import build_curves_workbook
 from ...export.summary_xlsx import build_summary_workbook
 from ...export.tables import TABLES, csv_table
 from ...export.values_xlsx import build_values_workbook
@@ -63,6 +64,30 @@ def export_result(sid: int, did: int, request: Request, kind: str = "values", ta
     except (EngineError, StorageError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from None
     return _download(body, f"{stem}_{kind}.xlsx", XLSX)
+
+
+@router.get("/projects/{pid}/export/curves")
+def export_curves(request: Request, scenario_id: int, access: Access = Depends(project_access()),
+                  db: Session = Depends(get_db)):
+    """LGD and marginal recovery curves for every cohort under one scenario."""
+    pid = access.project.id
+    s = db.get(Scenario, scenario_id)
+    if s is None or s.project_id != pid:
+        raise HTTPException(404, "Scenario not found")
+    rows = db.execute(select(Result).where(Result.scenario_id == s.id, Result.status == "ok")).scalars().all()
+    if not rows:
+        raise HTTPException(400, "This scenario has not been run for any zip yet")
+    applied = {label: to_face(np.asarray(row.values, dtype=float), row.basis)
+               for label, row in applied_curves(db, pid).items()}
+    cache = request.app.state.cache
+    try:
+        items = [{"zip": r.dataset.name, "category": r.dataset.category, "stale": r.stale,
+                  "applied_label": r.dataset.category if r.dataset.category in applied else None,
+                  "res": recompute(db, cache, r)} for r in rows]
+        body = build_curves_workbook(access.project.name, s.name, items, applied)
+    except (EngineError, StorageError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from None
+    return _download(body, f"{_safe(access.project.name)}_{_safe(s.name)}_curves.xlsx", XLSX)
 
 
 @router.get("/projects/{pid}/export/summary")

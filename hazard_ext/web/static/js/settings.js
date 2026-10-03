@@ -195,6 +195,21 @@ export async function settingsView(pid, ctx) {
       h("span", { class: "muted small" }, "TermStep"), tsInput, h("span", { class: "muted small" }, "Basis"), cmpBasis),
     cmpHost, h("div", { class: "small" }, "\u00a0"), cmpTable) : null;
 
+  // ------------------------------------------------------- curves download
+  const dlScn = h("select", null, project.scenarios.map((s) => h("option", { value: s.id }, s.name)));
+  dlScn.style.width = "auto";
+  const dlLink = h("a", { class: "btn", href: "#" }, "Download LGD and recovery curves (Excel)");
+  const setLink = () => { dlLink.href = `/api/projects/${pid}/export/curves?scenario_id=${dlScn.value}`; };
+  dlScn.addEventListener("change", setLink);
+  if (project.scenarios.length) setLink();
+  dlLink.addEventListener("click", () => toast("Building the curves workbook for every cohort. This takes up to half a minute."));
+  const downloads = project.scenarios.length ? h("section", { class: "block" },
+    h("header", null, h("h2", null, "Download curves")),
+    h("p", { class: "muted" }, "One workbook per scenario: final LGD by TermStep for every cohort, each cohort's marginal recovery " +
+      "curve on the face-value and outstanding-balance bases next to its reference curve and the client's applied curve, " +
+      "cumulative recovery, and a sheet per cohort of marginal recoveries by TermStep for the first 120 remaining steps."),
+    h("div", { class: "actions" }, h("span", { class: "muted small" }, "Scenario"), dlScn, dlLink)) : null;
+
   return {
     trail: [{ label: "Projects", href: "#/projects" }, { label: project.name, href: `#/p/${pid}` }, { label: "Members and curves" }],
     after: () => { drawCurves(); drawComparison(); },
@@ -223,6 +238,7 @@ export async function settingsView(pid, ctx) {
             field("The monthly rates are a", basisSel, "Face value: each month's cash as a share of the balance at default. Outstanding: a share of what is still owed at the start of that month."),
             h("button", { type: "button", onclick: uploadApplied }, "Upload applied curves"))) : null),
       comparison,
+      downloads,
       h("section", { class: "block" },
         h("header", null, h("h2", null, "Members")),
         memberTable,

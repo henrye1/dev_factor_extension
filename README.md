@@ -99,6 +99,10 @@ charts the LGD it implies at the file's discount rate. Applied curves never ente
 and never mark results out of date. The same page has a comparison section: pick a cohort, scenario
 and TermStep to see the observed data, our three fitted tails and the client's curve on one chart,
 on either the face-value or the outstanding-balance basis, with a cumulative recovery table.
+Below it, "Download curves" produces one workbook per scenario with final LGD by TermStep for
+every cohort, each cohort's marginal recovery curve on both bases next to its reference curve and
+the client's applied curve, cumulative recovery, and a sheet per cohort of marginal recoveries by
+TermStep for the first 120 remaining steps.
 
 ### The assistant
 

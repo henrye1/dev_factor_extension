@@ -472,6 +472,27 @@ def test_summary_workbook_when_the_target_is_below_the_observed_range(world):
     world.editor.delete(f"/api/projects/{pid}/scenarios/{s['id']}", headers=H)
 
 
+def test_curves_workbook_for_one_scenario(world):
+    pid, sid = world.pid, world.sid
+    r = world.viewer.get(f"/api/projects/{pid}/export/curves?scenario_id={sid}")
+    assert r.status_code == 200, r.text
+    wb = openpyxl.load_workbook(io.BytesIO(r.content), read_only=True)
+    assert wb.sheetnames == ["Notes", "LGD_by_TermStep", "Marginal_face", "Marginal_outstanding", "Cumulative_face", "M_VB44", "M_VBALL"]
+    e = _engine_44()
+    ws = wb["LGD_by_TermStep"]
+    heads = [c.value for c in next(ws.iter_rows(min_row=4, max_row=4))]
+    assert heads[:3] == ["TermStep", "VB44 – final LGD", "VBALL – final LGD"]
+    assert ws["B5"].value == pytest.approx(e.lgd_ts["lgd_final"][0], abs=1e-12)
+    mf = wb["Marginal_face"]
+    heads = [c.value for c in next(mf.iter_rows(min_row=4, max_row=4))]
+    assert heads[1] == "VB44 – ours (Reference curve shape)" and "VB44 – reference curve 44" in heads
+    assert mf["B5"].value == pytest.approx(e.ext[2, 1, 1], abs=1e-15)
+    mo = wb["Marginal_outstanding"]
+    assert mo["B5"].value == pytest.approx(e.ext[2, 1, 1], abs=1e-15)                        # month 1 equal on both bases
+    assert mo["B6"].value == pytest.approx(e.ext[2, 1, 2] / (1 - e.ext[2, 1, 1]), abs=1e-15)
+    assert world.viewer.get(f"/api/projects/{pid}/export/curves?scenario_id=999999").status_code == 404
+
+
 def test_outsider_cannot_reach_results_or_exports(world):
     base = f"/api/projects/{world.pid}"
     for url in (f"{base}/matrix", f"{base}/results/{world.sid}/{world.d44}",
