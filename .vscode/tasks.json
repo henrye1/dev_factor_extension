@@ -1,0 +1,39 @@
+{
+  // Terminal > Run Task...  (or Ctrl+Shift+P, "Tasks: Run Task")
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "LGD Tail Extension: start",
+      "detail": "Starts the app in a VS Code terminal. Then open http://127.0.0.1:8000",
+      "type": "shell",
+      "command": "pwsh",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}\\run_local.ps1"],
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": "^__never__$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Started server process|already running",
+          "endsPattern": "Uvicorn running on|already running"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "LGD Tail Extension: stop",
+      "detail": "Stops the app wherever it was started from",
+      "type": "shell",
+      "command": "${workspaceFolder}\\stop_app.cmd",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "LGD Tail Extension: run tests",
+      "type": "shell",
+      "command": "${env:USERPROFILE}\\.venvs\\dev_factor_extension\\Scripts\\python.exe",
+      "args": ["-m", "pytest", "-q"],
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# secrets and local data
+.env
+data/
+supabase/.temp/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# large inputs
+*.zip
+*.xlsx
+*.docx
+!docs/*.docx

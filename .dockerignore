@@ -1,0 +1,4 @@
+*
+!requirements.txt
+!hazard_ext
+hazard_ext/**/__pycache__
