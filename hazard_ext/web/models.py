@@ -96,7 +96,7 @@ CURVE_BASES = ("face", "outstanding")   # what the monthly rates are a share of
 class ClientCurve(Base):
     """A curve uploaded to a project.
 
-    kind "shape": a reference curve; replaces the built-in curve of the same label as the method 3 tail shape.
+    kind "shape": a reference curve, the method 3 tail shape for zips whose curve label matches.
     kind "applied": the client's applied recovery curve, drawn on the charts for comparison.
     """
     __tablename__ = "client_curves"

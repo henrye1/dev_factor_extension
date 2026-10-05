@@ -169,12 +169,12 @@ export async function projectView(pid, ctx) {
 
   // --------------------------------------------------------------- scenarios
   const newScenario = () => {
-    const name = h("input", { type: "text", placeholder: "Base – reference curve shape" });
+    const name = h("input", { type: "text", placeholder: "Base – exponential" });
     const desc = h("textarea", { rows: 2 });
     openDialog({
       title: "New scenario",
       body: h("div", null, field("Name", name), field("Description", desc, "Optional."),
-        h("p", { class: "muted small" }, "It starts with the workbook defaults: reference curve shape, Target TermStep 300, MaxBucket 420, MinExposure R100m. You set the parameters on the next page.")),
+        h("p", { class: "muted small" }, "It starts with method 1 (exponential) and the workbook defaults: Target TermStep 300, MaxBucket 420, MinExposure R100m. You set the parameters on the next page.")),
       actions: [{ label: "Cancel" }, { label: "Create scenario", kind: "primary",
         run: async () => {
           const s = await api.post(`/projects/${pid}/scenarios`, { name: name.value, description: desc.value });

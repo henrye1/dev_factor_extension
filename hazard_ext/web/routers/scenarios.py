@@ -110,8 +110,11 @@ def list_scenarios(access: Access = Depends(project_access()), db: Session = Dep
 def create_scenario(body: ScenarioIn, access: Access = Depends(project_access("editor")),
                     db: Session = Depends(get_db)):
     pid = access.project.id
+    # New scenarios start on method 1, which needs no reference curve; the engine default stays 3
+    # so that Params() still equals the workbook Config.
+    params = {"method": 1, **body.params}
     s = Scenario(project_id=pid, name=_check_name(db, pid, body.name),
-                 description=body.description.strip(), params=_full_params(body.params),
+                 description=body.description.strip(), params=_full_params(params),
                  created_by=access.user.id)
     db.add(s)
     db.commit()

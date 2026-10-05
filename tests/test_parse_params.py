@@ -6,11 +6,11 @@ import zipfile
 import numpy as np
 import pytest
 
-from hazard_ext.engine.curves import CurveError, builtin_curves, parse_curve_file
+from hazard_ext.engine.curves import CurveError, parse_curve_file
 from hazard_ext.engine.params import DEFAULTS, Params, clean_overrides, merge_params
 from hazard_ext.engine.parse import ParseError, RecoveryData, parse_zip
 
-from .conftest import ZIP_NAMES, load_zip
+from .conftest import ZIP_NAMES, load_zip, prototype_curves
 
 
 def _zip_bytes(files: dict[str, str]) -> io.BytesIO:
@@ -126,14 +126,6 @@ def test_parameters_are_bounded_and_finite(bad):
 
 
 # -------------------------------------------------------------------- curves
-def test_builtin_curves_match_the_workbooks(vb44):
-    curves = builtin_curves()
-    assert sorted(curves) == ["11", "15", "22", "23", "25", "44"]
-    for label, values in curves.items():
-        assert len(values) == 553
-        np.testing.assert_allclose(values, vb44.curves[label], rtol=0, atol=1e-18)
-
-
 def test_parse_curve_csv():
     out = parse_curve_file(b"t,44,New\n1,0.01,0.02\n2,0.03,0.04\n", "c.csv")
     assert list(out) == ["44", "New"] and out["New"].tolist() == [0.02, 0.04]

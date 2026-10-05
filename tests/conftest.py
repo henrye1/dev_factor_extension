@@ -46,6 +46,26 @@ class Golden:
         self.curves = {c: z["curves"][:, i + 1] for i, c in enumerate(cohorts)}
 
 
+_prototype: dict = {}
+
+
+def prototype_curves() -> dict[str, np.ndarray]:
+    """The six July 2026 prototype curves (11, 15, 22, 23, 25, 44; t = 1..553) from the workbooks'
+    Client_Curve sheet. The app has no built-in curves; tests upload these where method 3 needs one."""
+    if not _prototype:
+        _prototype.update(Golden("vb44").curves)
+    return _prototype
+
+
+def prototype_curves_csv() -> str:
+    curves = prototype_curves()
+    labels = sorted(curves)
+    n = max(len(v) for v in curves.values())
+    lines = [",".join(["t", *labels])]
+    lines += [",".join([str(t + 1), *(repr(float(curves[k][t])) for k in labels)]) for t in range(n)]
+    return "\n".join(lines) + "\n"
+
+
 @pytest.fixture(scope="session", params=["vb44", "vb22"])
 def golden(request) -> Golden:
     return Golden(request.param)

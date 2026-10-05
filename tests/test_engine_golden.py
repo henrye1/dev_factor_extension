@@ -5,10 +5,9 @@ import numpy as np
 import pytest
 
 from hazard_ext.engine.core import EngineError, compute
-from hazard_ext.engine.curves import builtin_curves
 from hazard_ext.engine.params import Params, merge_params
 
-from .conftest import ZIP_NAMES, load_zip
+from .conftest import ZIP_NAMES, load_zip, prototype_curves
 
 TOL = 1e-9
 
@@ -136,7 +135,7 @@ def test_warnings(vb44):
 def test_file_lgd_floor_is_reported_not_treated_as_a_mismatch():
     # In the cohort 44 zip the risk suite floors TermStep 2's LGD at TermStep 1's LGD.
     data = load_zip("44")
-    r = compute(data, Params(target_ts=300, max_bucket=420), builtin_curves()["44"])
+    r = compute(data, Params(target_ts=300, max_bucket=420), prototype_curves()["44"])
     gap = np.asarray(r.results["file_floor_gap"])
     assert gap[1] == pytest.approx(0.0026321195721, abs=1e-10)
     assert np.nan_to_num(np.delete(gap, 1)).max() < 1e-12
@@ -162,7 +161,7 @@ def test_overrides_replace_fitted_decay(vb44):
 @pytest.mark.parametrize("name", ZIP_NAMES)
 def test_all_zips_tie_out(name):
     data = load_zip(name)
-    curves = builtin_curves()
+    curves = prototype_curves()
     if name == "ALL":
         params, curve = Params(method=1, target_ts=360, max_bucket=480), None
     else:

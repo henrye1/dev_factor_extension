@@ -8,11 +8,10 @@ import pandas as pd
 import pytest
 
 from hazard_ext.engine.core import EngineError, compute
-from hazard_ext.engine.curves import builtin_curves
 from hazard_ext.engine.params import Params
 from hazard_ext.engine.parse import COLUMNS, from_raw_frame
 
-from .conftest import load_zip
+from .conftest import load_zip, prototype_curves
 
 
 def _random_params(rng: random.Random, n: int) -> dict:
@@ -42,7 +41,7 @@ def test_random_parameters_never_crash(seed):
     data = load_zip("44")
     n = data.triangles("Lifetime").n
     kwargs = _random_params(rng, n)
-    curve = rng.choice([builtin_curves()["44"], None, np.zeros(3), builtin_curves()["11"][:50]])
+    curve = rng.choice([prototype_curves()["44"], None, np.zeros(3), prototype_curves()["11"][:50]])
     try:
         res = compute(data, Params(**kwargs), curve)
     except EngineError:
@@ -61,7 +60,7 @@ def _frame(rows):
 
 @pytest.mark.parametrize("method", [1, 2, 3])
 def test_tiny_and_degenerate_files(method):
-    curve = builtin_curves()["44"]
+    curve = prototype_curves()["44"]
     one = from_raw_frame(_frame([["Lifetime", 1, 0, 100.0, 1, 100.0, 90.0, 0.1, 1, 0.98, 0.098, 0.098, 0.902]]))
     zero_exposure = from_raw_frame(_frame([
         ["Lifetime", 1, 0, 0.0, 1, 0.0, 0.0, 0.0, 1, 0.98, 0.0, 0.0, 1.0],

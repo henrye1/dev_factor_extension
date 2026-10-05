@@ -24,10 +24,10 @@ export const METHOD_HELP = {
   3: {
     title: "Method 3: reference curve shape",
     text: [
-      "The tail shape is a supplied reference recovery curve: monthly cash as a share of the balance at default, by month since default. Each zip uses the curve whose label equals its category. The six built-in curves are the prototype log-normal cohort curves (11, 15, 22, 23, 25 and 44, t = 1 to 553) from the July 2026 valuation; a project can upload its own under Members and curves.",
+      "The tail shape is a supplied reference recovery curve: monthly cash as a share of the balance at default, by month since default. Each zip uses the curve whose label equals its category. There are no built-in curves: the project uploads the client's curves under Members and curves.",
       "Nothing about the level is borrowed. The scale is still fitted to the challenger's own last credible buckets; only the rate of decay beyond them follows the reference curve.",
-      "The challenger's tail is therefore aligned to the reference curve by construction. It answers one question: what would the challenger show if we accepted that curve's tail? With the prototype curves it adds the most recovery of the three.",
-      "The ALL zip has no curve of its own. Give it a curve in an override, upload a curve labelled ALL, or use method 1 or 2 for it.",
+      "The challenger's tail is therefore aligned to the reference curve by construction. It answers one question: what would the challenger show if we accepted that curve's tail? With the July 2026 prototype curves it added the most recovery of the three.",
+      "A zip with no uploaded curve of its own label (ALL, for one) needs a curve named in an override, an uploaded curve with that label, or method 1 or 2.",
     ],
   },
 };
@@ -84,7 +84,7 @@ export const PARAM_HELP = {
     title: "MaxBucket",
     what: "The last bucket to which every row is extended. Recoveries after it are not counted.",
     def: "420 in the workbooks; 480 in the current scenarios.",
-    effect: "Raising it counts more tail recovery and lowers LGD slightly under the heavier shapes (power law and reference curve shape); the exponential tail is usually spent long before. Beyond the end of the reference curve (month 553 for the built-in curves, earlier for some cohorts) shape 3 adds nothing.",
+    effect: "Raising it counts more tail recovery and lowers LGD slightly under the heavier shapes (power law and reference curve shape); the exponential tail is usually spent long before. Beyond the end of the reference curve shape 3 adds nothing.",
   },
   horizon2: {
     title: "Valuation horizon (months)",

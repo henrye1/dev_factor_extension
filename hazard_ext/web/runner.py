@@ -10,7 +10,6 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..engine.core import EngineError, ExtensionResult, compute
-from ..engine.curves import builtin_curves
 from ..engine.params import Params, merge_params
 from ..engine.parse import ParseError, RecoveryData
 from .models import ClientCurve, Dataset, Result, Scenario, ScenarioOverride, User, utcnow
@@ -47,8 +46,8 @@ class DataCache:
 
 
 def project_curves(db: Session, project_id: int) -> dict[str, np.ndarray]:
-    """Shape curves for method 3: built-in curves, with the project's uploaded ones laid on top."""
-    curves = dict(builtin_curves())
+    """Shape curves for method 3: the curves uploaded to the project, by label."""
+    curves = {}
     rows = db.execute(select(ClientCurve).where(ClientCurve.project_id == project_id,
                                                 ClientCurve.kind == "shape")).scalars()
     for row in rows:

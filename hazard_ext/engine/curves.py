@@ -1,20 +1,15 @@
 """Reference curves used as tail shape 3.
 
 A curve is a monthly recovery rate as a fraction of the balance at default by month since
-default, t = 1, 2, ... The six built-in curves are the prototype log-normal cohort curves from
-the July 2026 valuation; projects may upload replacements.
+default, t = 1, 2, ... There are no built-in curves: method 3 uses only the curves uploaded to
+the project, so one client's curves never reach another client's project.
 """
 from __future__ import annotations
 
 import io
-from functools import lru_cache
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-_DATA = Path(__file__).parent / "data" / "client_curves.csv"
-
 
 class CurveError(ValueError):
     pass
@@ -54,12 +49,6 @@ def _frame_to_curves(df: pd.DataFrame) -> dict[str, np.ndarray]:
             raise CurveError("Every curve column needs a header label")
         out[label] = vals
     return out
-
-
-@lru_cache(maxsize=1)
-def builtin_curves() -> dict[str, np.ndarray]:
-    """Cohort label -> values for t = 1..553 (prototype Curves sheet, July 2026)."""
-    return _frame_to_curves(pd.read_csv(_DATA, float_precision="round_trip"))
 
 
 def parse_curve_file(data: bytes, filename: str) -> dict[str, np.ndarray]:

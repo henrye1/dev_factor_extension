@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...engine.applied import to_face
-from ...engine.curves import CurveError, builtin_curves, parse_curve_file
+from ...engine.curves import CurveError, parse_curve_file
 from ...engine.parse import ParseError, parse_zip
 from ..deps import Access, csrf_guard, current_user, get_db, project_access
 from ..models import (iso, CURVE_BASES, CURVE_KINDS, ROLES, ClientCurve, Dataset, Project,
@@ -36,18 +36,15 @@ def dataset_out(d: Dataset) -> dict:
 
 
 def curve_rows(db: Session, project_id: int) -> list[dict]:
-    """Shape curves (built-in and uploaded) followed by the client's applied curves."""
-    uploaded = {c.label: c for c in db.execute(select(ClientCurve).where(
-        ClientCurve.project_id == project_id, ClientCurve.kind == "shape")).scalars()}
+    """The project's uploaded shape curves followed by the client's applied curves."""
     rows = []
-    for label, values in sorted(project_curves(db, project_id).items()):
-        up = uploaded.get(label)
+    for row in sorted(db.execute(select(ClientCurve).where(
+            ClientCurve.project_id == project_id, ClientCurve.kind == "shape")).scalars(), key=lambda c: c.label):
+        values = np.asarray(row.values, dtype=float)
         nz = np.nonzero(values > 0)[0]
         rows.append({
-            "label": label, "id": up.id if up else None, "kind": "shape", "basis": "face",
-            "source": "uploaded" if up else "built-in",
-            "source_filename": up.source_filename if up else "",
-            "replaces_builtin": bool(up and label in builtin_curves()),
+            "label": row.label, "id": row.id, "kind": "shape", "basis": "face",
+            "source": "uploaded", "source_filename": row.source_filename,
             "length": int(len(values)), "last_nonzero_t": int(nz[-1] + 1) if nz.size else 0,
             "total": float(values.sum()),
         })
@@ -56,7 +53,7 @@ def curve_rows(db: Session, project_id: int) -> list[dict]:
         nz = np.nonzero(values > 0)[0]
         rows.append({
             "label": label, "id": row.id, "kind": "applied", "basis": row.basis,
-            "source": "uploaded", "source_filename": row.source_filename, "replaces_builtin": False,
+            "source": "uploaded", "source_filename": row.source_filename,
             "length": int(len(values)), "last_nonzero_t": int(nz[-1] + 1) if nz.size else 0,
             "total": float(values.sum()),
         })

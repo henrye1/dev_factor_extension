@@ -10,12 +10,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hazard_ext.engine.core import compute
-from hazard_ext.engine.curves import builtin_curves
 from hazard_ext.engine.params import Params
 from hazard_ext.web.config import Settings
 from hazard_ext.web.main import create_app
 
-from .conftest import load_zip, zip_path
+from .conftest import load_zip, zip_path, prototype_curves, prototype_curves_csv
 
 H = {"X-Requested-With": "hazard-ext"}
 ADMIN = ("admin@example.com", "admin-password-1")
@@ -176,11 +175,16 @@ def test_viewer_is_read_only(world):
 # --------------------------------------------------------------- scenarios
 def test_scenario_defaults_and_validation(world):
     pid = world.pid
-    r = world.editor.post(f"/api/projects/{pid}/scenarios", json={"name": "Base", "params": {"target_ts": 360, "max_bucket": 480}}, headers=H)
+    r = world.editor.post(f"/api/projects/{pid}/curves", files={"file": ("prototype.csv", prototype_curves_csv(), "text/csv")}, headers=H)
+    assert r.status_code == 200 and sorted(c["label"] for c in r.json()) == ["11", "15", "22", "23", "25", "44"]
+    r = world.editor.post(f"/api/projects/{pid}/scenarios", json={"name": "Base", "params": {"method": 3, "target_ts": 360, "max_bucket": 480}}, headers=H)
     assert r.status_code == 201, r.text
     s = r.json()
     world.sid = s["id"]
     assert s["params"]["method"] == 3 and s["params"]["target_ts"] == 360 and s["params"]["window"] == 12
+    plain = world.editor.post(f"/api/projects/{pid}/scenarios", json={"name": "Plain"}, headers=H)
+    assert plain.status_code == 201 and plain.json()["params"]["method"] == 1
+    assert world.editor.delete(f"/api/projects/{pid}/scenarios/{plain.json()['id']}", headers=H).status_code in (200, 204)
     assert world.editor.post(f"/api/projects/{pid}/scenarios", json={"name": "Base"}, headers=H).status_code == 409
     bad = world.editor.post(f"/api/projects/{pid}/scenarios", json={"name": "Bad", "params": {"windw": 3}}, headers=H)
     assert bad.status_code == 422 and "windw" in bad.text
@@ -199,7 +203,7 @@ def test_run_records_a_failure_per_zip_without_stopping_the_others(world):
 
 def test_result_equals_the_engine(world):
     r = world.viewer.get(f"/api/projects/{world.pid}/results/{world.sid}/{world.d44}").json()
-    expect = compute(load_zip("44"), Params(target_ts=360, max_bucket=480), builtin_curves()["44"])
+    expect = compute(load_zip("44"), Params(target_ts=360, max_bucket=480), prototype_curves()["44"])
     assert r["status"] == "ok" and r["stale"] is False and r["curve_label"] == "44"
     assert r["summary"]["lgd_selected"] == pytest.approx(expect.averages["lgd_selected"], abs=1e-12)
     np.testing.assert_allclose(r["payload"]["results"]["lgd_selected"], expect.results["lgd_selected"], atol=1e-12)
@@ -294,14 +298,14 @@ def test_curve_data_for_a_termstep(world):
 # ------------------------------------------------------------------ curves
 def test_uploaded_curve_makes_method_3_available_and_marks_results_stale(world):
     pid = world.pid
-    curve = builtin_curves()["22"]
+    curve = prototype_curves()["22"]
     text = "t,ALL\n" + "\n".join(f"{i + 1},{float(v)!r}" for i, v in enumerate(curve))
     assert world.viewer.post(f"/api/projects/{pid}/curves", files={"file": ("all.csv", text, "text/csv")},
                              headers=H).status_code == 403
     r = world.editor.post(f"/api/projects/{pid}/curves", files={"file": ("all.csv", text, "text/csv")}, headers=H)
     assert r.status_code == 200
     rows = {c["label"]: c for c in r.json()}
-    assert rows["ALL"]["source"] == "uploaded" and rows["44"]["source"] == "built-in" and len(rows) == 7
+    assert rows["ALL"]["source"] == "uploaded" and rows["44"]["source"] == "uploaded" and len(rows) == 7
     assert world.editor.get(f"/api/projects/{pid}/results/{world.sid}/{world.d44}").json()["stale"] is True
     # remove the override: ALL now runs with method 3 on its own curve
     world.editor.put(f"/api/projects/{pid}/scenarios/{world.sid}/overrides/{world.dall}", json={"params": {}}, headers=H)
@@ -322,7 +326,7 @@ def test_applied_curves_compare_without_touching_the_calculation(world):
                           data={"kind": "applied", "basis": "outstanding"}, headers=H)
     assert r.status_code == 200, r.text
     rows = {(c["label"], c["kind"]): c for c in r.json()}
-    assert rows[("44", "applied")]["basis"] == "outstanding" and rows[("44", "shape")]["source"] == "built-in"
+    assert rows[("44", "applied")]["basis"] == "outstanding" and rows[("44", "shape")]["source"] == "uploaded"
     assert abs(rows[("44", "applied")]["total"] - (1 - 0.95 ** 120)) < 1e-9       # converted to the face basis
     # results are not marked out of date: applied curves are comparison only
     after = world.editor.get(f"/api/projects/{pid}/results/{sid}/{d44}").json()
@@ -373,7 +377,7 @@ def test_csv_export(world):
 
 
 def _engine_44():
-    return compute(load_zip("44"), Params(target_ts=360, max_bucket=480, window=24), builtin_curves()["44"])
+    return compute(load_zip("44"), Params(target_ts=360, max_bucket=480, window=24), prototype_curves()["44"])
 
 
 def test_values_workbook(world):

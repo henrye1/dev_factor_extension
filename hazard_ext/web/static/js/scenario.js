@@ -22,6 +22,8 @@ export async function scenarioView(pid, sid, ctx) {
 
   const saveBtn = h("button", { type: "button", onclick: () => save(false) }, "Save changes");
   const runBtn = h("button", { type: "button", class: "primary", onclick: () => save(true) }, "Save and run all zips");
+  // Results go stale only when the parameters actually change, so saving before any run is safe.
+  const persist = (params) => api.put(`/projects/${pid}/scenarios/${sid}`, { name: name.value, description: desc.value, params });
   const save = async (thenRun) => {
     let params;
     try { params = form.values(); } catch (err) { return toast(err.message, true); }
@@ -29,7 +31,7 @@ export async function scenarioView(pid, sid, ctx) {
     const label = runBtn.textContent;
     if (thenRun) runBtn.textContent = "Saving and running…";
     try {
-      await api.put(`/projects/${pid}/scenarios/${sid}`, { name: name.value, description: desc.value, params });
+      await persist(params);
       if (thenRun) {
         const out = await api.post(`/projects/${pid}/scenarios/${sid}/run`, {});
         const bad = out.filter((o) => o.status === "error").length;
@@ -61,9 +63,13 @@ export async function scenarioView(pid, sid, ctx) {
       }],
     });
   };
+  // Saves the form first, so the run uses what is on screen and not the last saved version.
   const runZip = async (d, btn) => {
+    let params;
+    try { params = form.values(); } catch (err) { return toast(err.message, true); }
     btn.disabled = true;
     try {
+      await persist(params);
       const [out] = await api.post(`/projects/${pid}/scenarios/${sid}/run`, { dataset_id: d.id });
       toast(out.status === "ok" ? `${d.name} run` : `${d.name}: ${out.error}`, out.status !== "ok");
       ctx.route();

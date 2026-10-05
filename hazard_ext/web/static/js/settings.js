@@ -59,14 +59,14 @@ export async function settingsView(pid, ctx) {
     catch (err) { reportError(err); }
   };
   const removeCurve = (c) => confirmDialog(`Remove the uploaded curve ${c.label}?`,
-    c.replaces_builtin ? "The built-in curve with this label is used again." : "Zips that use it will fail on method 3 until another curve is chosen.",
+    "Zips that use it will fail on method 3 until another curve is chosen.",
     "Remove curve", async () => { await api.del(`/projects/${pid}/curves/${c.id}`); toast("Curve removed"); refresh(); });
   const chartHost = h("div");
   const shapeCurves = project.curves.filter((c) => c.kind !== "applied");
   const appliedCurves = project.curves.filter((c) => c.kind === "applied");
   const curveTable = dataTable([
     { label: "Label", key: "label" },
-    { label: "Source", key: "source", fmt: (v, c) => (v === "uploaded" ? `Uploaded (${c.source_filename})` + (c.replaces_builtin ? ", replaces built-in" : "") : "Built-in (prototype log-normal curve)") },
+    { label: "Source", key: "source", fmt: (v, c) => `Uploaded (${c.source_filename})` },
     { label: "Months", key: "length", num: true },
     { label: "Last non-zero month", key: "last_nonzero_t", num: true },
     { label: "Total recovery on face", key: "total", num: true, fmt: (v) => (v * 100).toFixed(1) + "%" },
@@ -219,12 +219,12 @@ export async function settingsView(pid, ctx) {
       h("section", { class: "block" },
         h("header", null, h("h2", null, "Reference curves (method 3 tail shape)")),
         h("p", { class: "muted" }, "Method 3 scales each zip's tail to the reference curve whose label equals the zip's category, unless the scenario " +
-          "or the zip's override names another. The six built-in curves are the prototype log-normal cohort curves from the July 2026 " +
-          "valuation. The ALL zip has no curve of its own: name one in an override, upload a curve labelled ALL, or use method 1 or 2."),
+          "or the zip's override names another. There are no built-in curves: upload the client's curves here before running method 3. " +
+          "A zip with no curve of its own label, such as ALL, needs one named in an override, an uploaded curve with that label, or method 1 or 2."),
         curveTable, h("div", { class: "small" }, " "), chartHost,
         canEdit ? h("div", null, h("div", { class: "small" }, " "),
           h("div", { class: "row" },
-            field("Upload reference curves", file, "A .csv or .xlsx. First column t = 1, 2, 3 and so on; then one column per curve, headed with its label. A label that matches a built-in curve replaces it in this project."),
+            field("Upload reference curves", file, "A .csv or .xlsx. First column t = 1, 2, 3 and so on; then one column per curve, headed with its label. A label that is already uploaded is replaced."),
             h("button", { type: "button", onclick: uploadCurve }, "Upload reference curves"))) : null),
       h("section", { class: "block" },
         h("header", null, h("h2", null, "Client applied recovery curves")),

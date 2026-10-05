@@ -1,6 +1,6 @@
 # secrets and local data
 .env
-data/
+/data/
 supabase/.temp/
 
 # Python

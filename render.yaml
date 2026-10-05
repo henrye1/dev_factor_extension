@@ -1,0 +1,46 @@
+# Render Blueprint: the app as one Docker web service, using the Supabase project for the
+# database and for the parsed zips. Render: New > Blueprint > pick this repository.
+# Values marked sync: false are asked for once, in the Render dashboard; they never live in git.
+services:
+  - type: web
+    name: lgd-tail-extension
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Frankfurt is the Render region nearest the London database.
+    region: frankfurt
+    # About 1 GB of memory is needed while a large zip is parsed; starter (512 MB) is too small.
+    plan: standard
+    # One instance only: the sign-in throttle and the dataset cache live in the process.
+    numInstances: 1
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Supabase session pooler string (IPv4), user hazard_app. Not the direct or transaction pooler.
+      - key: DATABASE_URL
+        sync: false
+      # hazard_app cannot create tables; run new migrations in the Supabase SQL editor.
+      - key: AUTO_CREATE_SCHEMA
+        value: "false"
+      # Render's disk is wiped on every deploy, so the zips are kept in the database.
+      - key: STORAGE_BACKEND
+        value: db
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: SESSION_HOURS
+        value: "12"
+      - key: MAX_UPLOAD_MB
+        value: "200"
+      - key: API_DOCS
+        value: "false"
+      # Used once, only while the database has no user at all; leave empty when users exist.
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Optional: switches on the assistant. Leave empty to hide it.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: AGENT_MODEL
+        value: claude-opus-5-5
