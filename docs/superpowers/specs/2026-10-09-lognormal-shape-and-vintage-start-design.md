@@ -478,3 +478,44 @@ console errors.
 - A scenario on "Last 10 years" runs on every zip whose runoff passes the self-check, shows the
   vintage window everywhere a result is shown, and fails with a clear message on zips that need
   re-uploading.
+
+## 9. What changed during the build (9 October 2026)
+
+Built in one pass on `feature/three-methods-and-vintage-start` (Henry asked for every milestone
+at once after reviewing Milestone 1). Everything in Sections 2 and 3 is in, with these notes:
+
+- **"Logistic" was read as the client's log-normal form** (Section 1.1). Henry has not yet
+  confirmed this; only Section 2.2 would change if a true logistic was meant.
+- **`vintage_start` is a string "YYYY-MM"**, not a `date`, so it serialises unchanged into the
+  JSON parameter columns and the month picker. "YYYY-MM-DD" is accepted and normalised.
+- **A start at or before the first vintage is treated as no filter**, so the whole output
+  (except the stored parameters) is identical to an unfiltered run, as test 8 requires. Test 8
+  therefore compares `to_json()` without the `params` key.
+- **The retired key is dropped on input too.** A scenario sent with `client_cohort` from a
+  stale browser is accepted with the key removed, rather than refused.
+- **The migration runs in Python at every start** (`runner.migrate_three_methods`): it strips
+  the retired key from scenarios and overrides and marks every result stored before this
+  change as out of date, including methods 1 and 2, because their stored tables lack the
+  log-normal columns. `migrations/005_three_methods.sql` is kept for the record and is
+  optional. Legacy results are flagged in the matrix, on the zip page and in a project notice
+  (the notice counts the method 3 ones).
+- **The formula workbook fits the log-normal with SLOPE/INTERCEPT helper rows** (Tail_Fit
+  rows 12–17, the two-stage form of the quadratic fit) instead of LINEST, so the fit honours
+  the same blank-point rule as λ and γ and needs no array formulas. The per-TermStep table on
+  Tail_Fit therefore starts on row 20 instead of 15. Config keeps every address up to B30;
+  B12 is the μ override, B20 the σ override, B31–B37 the log-normal block, and the vintage
+  rows follow. Excel recalculation matched the engine to 1e-13 on VB44 and VB22 under methods
+  1, 2 and 3, with each override path and with a vintage filter (Excel through COM, not
+  LibreOffice).
+- **Result payloads are now loaded only by the routes that need them**, and the final LGD
+  series is kept in the summary. The project page with seven zips took about 25 seconds over
+  the Supabase link before this; it takes about two now.
+- **The golden tests** assert only the surviving columns. The "selected" columns are checked
+  under methods 1 and 2 against the golden exponential and power-law columns; pv_selected,
+  uplift and lgd_horizon are checked for consistency with the per-shape columns instead,
+  because the golden files hold them for the removed method only. The golden λ and γ differ
+  slightly from the Section 2.2 table because the workbooks' Raw_Debug is an older cut of the
+  data than the 2 October zips; the μ/σ check (test 3) runs on the zips.
+- **Out of scope, still to do by Henry:** rewrite Method 3 of the methods note (.docx) and add
+  a vintage paragraph; re-upload the seven zips in the existing projects so the vintage
+  filter is available (they were stored without runoff data); push the branch.

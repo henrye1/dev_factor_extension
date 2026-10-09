@@ -206,7 +206,7 @@ export async function zipView(pid, did, sid, ctx) {
   if (result.legacy) {
     // computed before the reference-curve method was replaced by log-normal: its figures are not current
     return { trail, node: h("div", null, head,
-      h("p", { class: "notice" }, "This result was computed with the reference-curve method, which has been replaced by the log-normal method. Run the scenario again to see current figures."),
+      h("p", { class: "notice" }, "This result was computed before the reference-curve method was replaced by the log-normal method (9 October 2026). Run the scenario again to see current figures."),
       assumptions) };
   }
   const hasLogn = avg.lgd_logn !== null && avg.lgd_logn !== undefined;
