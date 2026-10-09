@@ -261,7 +261,7 @@ export async function zipView(pid, did, sid, ctx) {
       extra: cfg.logn_mode === null || cfg.logn_mode === undefined ? blank : `peak at bucket ${cfg.logn_mode.toFixed(1)}, median ${cfg.logn_median.toFixed(1)}`,
       k: "scale_logn", sel: cfg.method === 3 },
   ].map((r) => ({ ...r, shape: r.shape + (r.sel ? " (selected)" : ""), scale1: TF[r.k][0], scaleBase: TF[r.k][baseRow] }));
-  const six = (v) => (v === null || v === undefined ? blank : v.toPrecision(6));
+  const sig6 = (v) => (v === null || v === undefined ? blank : v.toPrecision(6));
   const curveParams = h("section", { class: "block" },
     h("header", null, h("h2", null, "Forecast curve parameters"),
       h("span", { class: "muted small" },
@@ -273,8 +273,8 @@ export async function zipView(pid, did, sid, ctx) {
       { label: "Formula", key: "formula" },
       { label: "Parameters used (fitted)", key: "params" },
       { label: "Derived", key: "extra" },
-      { label: "Scale, TermStep 1", key: "scale1", num: true, fmt: six },
-      { label: `Scale, base row ${prm.base_ts}`, key: "scaleBase", num: true, fmt: six },
+      { label: "Scale, TermStep 1", key: "scale1", num: true, fmt: sig6 },
+      { label: `Scale, base row ${prm.base_ts}`, key: "scaleBase", num: true, fmt: sig6 },
     ], curveRows, { plain: true, rowClass: (r) => (r.sel ? "selectedrow" : "") }));
 
   // ----------------------------------------------------------------- charts
