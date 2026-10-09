@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 import httpx
+from sqlalchemy import delete
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import Settings
@@ -28,6 +29,7 @@ class BlobStore(Protocol):
     def put(self, key: str, data: bytes) -> None: ...
     def get(self, key: str) -> bytes: ...
     def delete(self, key: str) -> None: ...
+    def delete_many(self, keys: list[str]) -> None: ...
 
 
 class LocalBlobStore:
@@ -54,6 +56,10 @@ class LocalBlobStore:
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
 
+    def delete_many(self, keys: list[str]) -> None:
+        for key in keys:
+            self.delete(key)
+
 
 class DbBlobStore:
     def __init__(self, session_factory: sessionmaker[Session]):
@@ -71,10 +77,15 @@ class DbBlobStore:
             return bytes(row.data)
 
     def delete(self, key: str) -> None:
+        self.delete_many([key])
+
+    def delete_many(self, keys: list[str]) -> None:
+        # one statement for the lot: a project's zips go in a single round trip
+        keys = [_check(k) for k in keys]
+        if not keys:
+            return
         with self.session_factory.begin() as s:
-            row = s.get(Blob, _check(key))
-            if row is not None:
-                s.delete(row)
+            s.execute(delete(Blob).where(Blob.key.in_(keys)))
 
 
 class SupabaseBlobStore:
@@ -116,6 +127,10 @@ class SupabaseBlobStore:
         r = self._send("DELETE", key, headers=self.headers)
         if r.status_code >= 300 and r.status_code != 404:
             raise StorageError(f"Supabase Storage delete failed ({r.status_code}): {r.text[:300]}")
+
+    def delete_many(self, keys: list[str]) -> None:
+        for key in keys:
+            self.delete(key)
 
 
 def make_blob_store(settings: Settings, session_factory: sessionmaker[Session]) -> BlobStore:

@@ -51,10 +51,10 @@ class Project(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey(User.id))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    members: Mapped[list["ProjectMember"]] = relationship(cascade="all, delete-orphan", back_populates="project")
-    datasets: Mapped[list["Dataset"]] = relationship(cascade="all, delete-orphan", back_populates="project")
-    scenarios: Mapped[list["Scenario"]] = relationship(cascade="all, delete-orphan", back_populates="project")
-    curves: Mapped[list["ClientCurve"]] = relationship(cascade="all, delete-orphan", back_populates="project")
+    members: Mapped[list["ProjectMember"]] = relationship(cascade="all, delete-orphan", passive_deletes=True, back_populates="project")
+    datasets: Mapped[list["Dataset"]] = relationship(cascade="all, delete-orphan", passive_deletes=True, back_populates="project")
+    scenarios: Mapped[list["Scenario"]] = relationship(cascade="all, delete-orphan", passive_deletes=True, back_populates="project")
+    curves: Mapped[list["ClientCurve"]] = relationship(cascade="all, delete-orphan", passive_deletes=True, back_populates="project")
 
 
 class ProjectMember(Base):
@@ -85,8 +85,8 @@ class Dataset(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="datasets")
-    results: Mapped[list["Result"]] = relationship(cascade="all, delete-orphan", back_populates="dataset")
-    overrides: Mapped[list["ScenarioOverride"]] = relationship(cascade="all, delete-orphan", back_populates="dataset")
+    results: Mapped[list["Result"]] = relationship(cascade="all, delete-orphan", passive_deletes=True, back_populates="dataset")
+    overrides: Mapped[list["ScenarioOverride"]] = relationship(cascade="all, delete-orphan", passive_deletes=True, back_populates="dataset")
 
 
 CURVE_KINDS = ("shape", "applied")     # shape: retired (the old reference-curve method); applied: comparison only
@@ -128,8 +128,8 @@ class Scenario(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="scenarios")
-    overrides: Mapped[list["ScenarioOverride"]] = relationship(cascade="all, delete-orphan", back_populates="scenario")
-    results: Mapped[list["Result"]] = relationship(cascade="all, delete-orphan", back_populates="scenario")
+    overrides: Mapped[list["ScenarioOverride"]] = relationship(cascade="all, delete-orphan", passive_deletes=True, back_populates="scenario")
+    results: Mapped[list["Result"]] = relationship(cascade="all, delete-orphan", passive_deletes=True, back_populates="scenario")
 
 
 class ScenarioOverride(Base):

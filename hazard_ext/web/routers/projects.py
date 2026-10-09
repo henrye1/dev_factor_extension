@@ -143,8 +143,8 @@ def patch_project(body: ProjectPatch, access: Access = Depends(project_access("o
 def delete_project(request: Request, access: Access = Depends(project_access("owner")),
                    db: Session = Depends(get_db)):
     p = db.get(Project, access.project.id)
-    keys = [d.blob_key for d in p.datasets]
-    db.delete(p)
+    keys = list(db.execute(select(Dataset.blob_key).where(Dataset.project_id == p.id)).scalars())
+    db.delete(p)                                  # the database cascades to members, zips, scenarios and results
     db.commit()
     _drop_blobs(request, keys)
     return {"ok": True}
@@ -153,10 +153,10 @@ def delete_project(request: Request, access: Access = Depends(project_access("ow
 def _drop_blobs(request: Request, keys: list[str]) -> None:
     for key in keys:
         request.app.state.cache.drop(key)
-        try:
-            request.app.state.store.delete(key)
-        except StorageError:
-            pass                                  # the row is gone; an orphan blob is harmless
+    try:
+        request.app.state.store.delete_many(keys)
+    except StorageError:
+        pass                                      # the rows are gone; an orphan blob is harmless
 
 
 # --------------------------------------------------------------------- members
