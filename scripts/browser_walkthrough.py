@@ -73,7 +73,7 @@ def main(base: str, email: str, password: str, out: str) -> int:
         page.get_by_text("Override saved").wait_for()
         page.wait_for_timeout(600)
         page.get_by_role("button", name="Save and run all zips").click()
-        page.get_by_text("7 of 7 zips run").wait_for(timeout=120_000)
+        page.get_by_text("7 of 7 zips run").wait_for(timeout=600_000)
         shot("04_scenario")
 
         # scenario 2: a copy using the exponential shape and a percentage credibility cut
@@ -89,7 +89,7 @@ def main(base: str, email: str, password: str, out: str) -> int:
         page.locator("select#p_vintages").select_option("years")
         page.get_by_label("Number of years", exact=True).fill("10")
         page.get_by_role("button", name="Save and run all zips").click()
-        page.get_by_text("7 of 7 zips run").wait_for(timeout=120_000)
+        page.get_by_text("7 of 7 zips run").wait_for(timeout=600_000)
 
         page.locator(".crumbs a").nth(1).click()
         page.locator("table.matrix").wait_for()

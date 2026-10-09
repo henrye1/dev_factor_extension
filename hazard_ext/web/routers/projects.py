@@ -19,7 +19,7 @@ from ...engine.parse import ParseError, parse_zip
 from ..deps import Access, csrf_guard, current_user, get_db, project_access
 from ..models import (iso, utcnow, CURVE_BASES, CURVE_KINDS, ROLES, ClientCurve, Dataset, Project,
                       ProjectMember, Result, Scenario, User)
-from ..runner import applied_curves, mark_stale
+from ..runner import applied_curves, is_legacy_result, mark_stale
 from ..storage import StorageError
 
 router = APIRouter(prefix="/api", dependencies=[Depends(csrf_guard)])
@@ -115,7 +115,7 @@ def get_project(access: Access = Depends(project_access()), db: Session = Depend
     legacy = sum(1 for r in db.execute(
         select(Result).join(Scenario, Scenario.id == Result.scenario_id)
         .where(Scenario.project_id == p.id, Result.status == "ok", Result.stale.is_(True))).scalars()
-        if (r.effective_params or {}).get("method") == 3 and "lgd_client" in ((r.payload or {}).get("averages") or {}))
+        if (r.effective_params or {}).get("method") == 3 and is_legacy_result(r))
     return {
         "id": p.id, "name": p.name, "description": p.description, "role": access.role,
         "datasets": [dataset_out(d) for d in datasets],

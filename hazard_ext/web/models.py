@@ -154,7 +154,8 @@ class Result(Base):
     effective_params: Mapped[dict] = mapped_column(Json, default=dict)
     curve_label: Mapped[str] = mapped_column(String(100), default="")     # always "" since 9 Oct 2026; kept for old rows
     summary: Mapped[dict] = mapped_column(Json, default=dict)
-    payload: Mapped[dict] = mapped_column(Json, default=dict)
+    # the full tables run to megabytes per zip; loaded only when a route asks for them
+    payload: Mapped[dict] = mapped_column(Json, default=dict, deferred=True)
     computed_by: Mapped[int] = mapped_column(ForeignKey(User.id))
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

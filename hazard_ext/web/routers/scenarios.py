@@ -13,7 +13,7 @@ from ...engine.params import DEFAULTS, Params, clean_overrides, merge_params
 from ...engine.parse import ParseError
 from ..deps import Access, csrf_guard, current_user, get_db, project_access
 from ..models import iso, Dataset, Result, Scenario, ScenarioOverride, User, utcnow
-from ..runner import applied_curves, is_legacy_payload, mark_stale, recompute, run_one
+from ..runner import applied_curves, is_legacy_result, mark_stale, recompute, run_one
 from ...engine.applied import implied_lgd, rate_at, to_face, to_outstanding
 import numpy as np
 from ..storage import StorageError
@@ -53,7 +53,7 @@ def result_meta(r: Result | None) -> dict:
     if r is None:
         return {"status": "none"}
     return {"status": r.status, "error": r.error, "stale": r.stale, "summary": r.summary,
-            "legacy": r.status == "ok" and is_legacy_payload(r.payload), "computed_at": iso(r.computed_at)}
+            "legacy": is_legacy_result(r), "computed_at": iso(r.computed_at)}
 
 
 def scenario_out(s: Scenario, detail: bool = False) -> dict:
@@ -271,11 +271,16 @@ def series(access: Access = Depends(project_access()), db: Session = Depends(get
                       .where(Scenario.project_id == pid, Result.status == "ok")).scalars()
     out = []
     for r in rows:
-        lt = (r.payload or {}).get("lgd_ts") or {}
-        if not lt.get("lgd_final"):
+        if is_legacy_result(r):
+            continue
+        final = (r.summary or {}).get("lgd_final")
+        if final is None:                       # a result stored before the series was kept in the summary
+            lt = (r.payload or {}).get("lgd_ts") or {}
+            final = lt.get("lgd_final")
+        if not final:
             continue
         out.append({"scenario_id": r.scenario_id, "dataset_id": r.dataset_id, "stale": r.stale,
-                    "ts": lt["ts"], "lgd_final": lt["lgd_final"],
+                    "ts": list(range(1, len(final) + 1)), "lgd_final": final,
                     "lgd_selected_avg": (r.summary or {}).get("lgd_selected")})
     return out
 

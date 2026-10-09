@@ -73,6 +73,8 @@ def summarise(res: ExtensionResult) -> dict:
         "lam": c["lam"], "gam": c["gam"], "mu": c["mu"], "sigma": c["sigma"], "rate": c["rate"],
         "vintage_filter": bool(c["vintage_filter"]), "vintages": vintage_text(c),
         "n": j["n"], "warnings": len(j["warnings"]),
+        # the final LGD series, so the comparison charts need not load the whole payload
+        "lgd_final": j["lgd_ts"]["lgd_final"],
     }
 
 
@@ -111,16 +113,21 @@ def recompute(db: Session, cache: DataCache, result: Result) -> ExtensionResult:
     parameters it was run with."""
     if result.status != "ok":
         raise EngineError(result.error or "This result has not been computed")
-    if is_legacy_payload(result.payload):
+    if is_legacy_result(result):
         raise EngineError("This result was computed with the removed reference-curve method; run the scenario again")
     params = load_params(result.effective_params)
     return compute(cache.get(result.dataset.blob_key), params)
 
 
-def is_legacy_payload(payload: dict | None) -> bool:
-    """True for a result stored before the reference-curve shape was replaced by log-normal."""
-    avg = (payload or {}).get("averages") or {}
-    return "lgd_client" in avg or ("lgd_logn" not in avg and bool(avg))
+def is_legacy_summary(summary: dict | None) -> bool:
+    """True for a result stored before the reference-curve shape was replaced by log-normal.
+    Judged on the summary, which every route loads, not the payload."""
+    s = summary or {}
+    return "lgd_client" in s or ("lgd_logn" not in s and bool(s))
+
+
+def is_legacy_result(result: Result) -> bool:
+    return result.status == "ok" and is_legacy_summary(result.summary)
 
 
 def mark_stale(db: Session, *, scenario_id: int | None = None, dataset_id: int | None = None,
@@ -157,7 +164,7 @@ def migrate_three_methods(session_factory) -> dict:
                 o.params = {k: v for k, v in o.params.items() if k not in RETIRED}
                 stripped += 1
         for r in db.execute(select(Result).where(Result.status == "ok", Result.stale.is_(False))).scalars():
-            if is_legacy_payload(r.payload):
+            if is_legacy_summary(r.summary):
                 r.stale = True
                 stale += 1
         db.commit()
