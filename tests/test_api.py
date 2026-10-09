@@ -531,6 +531,35 @@ def test_curves_workbook_for_one_scenario(world):
     assert world.viewer.get(f"/api/projects/{pid}/export/curves?scenario_id=999999").status_code == 404
 
 
+def test_all_cohorts_results_workbook_and_bundle(world):
+    pid, sid = world.pid, world.sid
+    r = world.viewer.get(f"/api/projects/{pid}/export/results?scenario_id={sid}")
+    assert r.status_code == 200, r.text
+    wb = openpyxl.load_workbook(io.BytesIO(r.content), read_only=True)
+    assert wb.sheetnames == ["Summary", "Results_by_TermStep", "LGD_to_Target", "Tail_fit", "Parameters", "Warnings"]
+    e = _engine_44()
+    rows = [[c.value for c in row] for row in wb["Summary"].iter_rows(min_row=5, max_col=15)]
+    assert [r_[0] for r_ in rows] == ["VB44", "VBALL"]
+    assert rows[0][3] == "Log-normal" and rows[0][14] == pytest.approx(e.averages["lgd_selected"], abs=1e-12)
+    ws = wb["Results_by_TermStep"]
+    heads = [c.value for c in next(ws.iter_rows(min_row=3, max_row=3))]
+    assert heads[:4] == ["Zip", "Category", "TermStep", "Exposure at ts (R)"] and "LGD – log-normal" in heads
+    long = [[c.value for c in row] for row in ws.iter_rows(min_row=4, max_col=3)]
+    assert sum(1 for r_ in long if r_[0] == "VB44") == 97 and sum(1 for r_ in long if r_[0] == "VBALL") == 329
+    first = [c.value for c in next(ws.iter_rows(min_row=4, max_row=4))]
+    assert first[heads.index("LGD – SELECTED")] == pytest.approx(e.results["lgd_selected"][0], abs=1e-12)
+    assert wb["LGD_to_Target"].max_row == 3 + 2 * 360
+    params = {row[0].value: row[1].value for row in wb["Parameters"].iter_rows(min_row=3, max_col=2)}
+    assert params["Parameter"] == "VB44" and params["MaxBucket"] == 480
+    z = world.viewer.get(f"/api/projects/{pid}/export/results?scenario_id={sid}&bundle=zip")
+    assert z.status_code == 200 and z.headers["content-type"] == "application/zip"
+    import zipfile
+    names = sorted(zipfile.ZipFile(io.BytesIO(z.content)).namelist())
+    assert names == ["VB44_Base_values.xlsx", "VBALL_Base_values.xlsx"]
+    assert world.viewer.get(f"/api/projects/{pid}/export/results?scenario_id={sid}&bundle=tar").status_code == 422
+    assert world.viewer.get(f"/api/projects/{pid}/export/results?scenario_id=999999").status_code == 404
+
+
 def test_outsider_cannot_reach_results_or_exports(world):
     base = f"/api/projects/{world.pid}"
     for url in (f"{base}/matrix", f"{base}/results/{world.sid}/{world.d44}",

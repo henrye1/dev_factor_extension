@@ -216,6 +216,16 @@ export async function projectView(pid, ctx) {
     { label: "Target / MaxBucket", key: "params", num: true, fmt: (p) => `${p.target_ts} / ${p.max_bucket}` },
     { label: "MinExposure", key: "params", num: true, fmt: (p) => (p.min_exposure_mode === "pct" ? `${p.min_exposure}% of opening` : fmt.moneyShort(p.min_exposure)) },
     { label: "Overrides", key: "overrides", num: true, fmt: (o) => Object.keys(o).length || "–" },
+    { label: "Results for every cohort", key: "id", fmt: (_, s) => {
+        const ran = matrix.cells.some((c) => c.scenario_id === s.id && c.status === "ok");
+        if (!ran) return h("span", { class: "muted small" }, "Run the scenario first");
+        const dl = (bundle, label) => (ev) => { ev.preventDefault(); api.download(ev.currentTarget.href, label).catch(reportError); };
+        return h("div", { class: "actions" },
+          h("a", { class: "btn", href: `/api/projects/${pid}/export/results?scenario_id=${s.id}`, title: "One workbook: every cohort's Results, LGD-to-Target and tail-fit tables, parameters and warnings",
+            onclick: dl("xlsx", `Building the all-cohorts workbook for ${s.name}…`) }, "Excel, all cohorts"),
+          h("a", { class: "btn", href: `/api/projects/${pid}/export/results?scenario_id=${s.id}&bundle=zip`, title: "A zip holding each cohort's values workbook",
+            onclick: dl("zip", `Building a values workbook for every cohort under ${s.name}…`) }, "Workbooks (zip)"));
+      } },
     ...(canEdit ? [{ label: "", key: "id", fmt: (_, s) => {
         const run = h("button", { type: "button", class: "primary" }, "Run");
         run.addEventListener("click", () => runOne(s, run));

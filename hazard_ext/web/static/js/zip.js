@@ -404,7 +404,9 @@ export async function zipView(pid, did, sid, ctx) {
           : h("a", { class: "btn", href: `${base}/export?kind=formula`, onclick: dl("Building the formula workbook. Large zips take up to a minute…") }, "Excel, live formulas"),
         h("a", { class: "btn", href: `${base}/export?kind=csv&table=results`, onclick: dl("Preparing the CSV…") }, "CSV, results"),
         h("a", { class: "btn", href: `${base}/export?kind=csv&table=lgd_ts`, onclick: dl("Preparing the CSV…") }, "CSV, LGD to Target"),
-        h("a", { class: "btn", href: `${base}/export?kind=csv&table=tail_fit`, onclick: dl("Preparing the CSV…") }, "CSV, tail fit"))),
+        h("a", { class: "btn", href: `${base}/export?kind=csv&table=tail_fit`, onclick: dl("Preparing the CSV…") }, "CSV, tail fit"),
+        h("a", { class: "btn", href: `/api/projects/${pid}/export/results?scenario_id=${sid}`, title: "One workbook with these tables for every cohort under this scenario",
+          onclick: dl(`Building the all-cohorts workbook for ${scenario.name}…`) }, "Excel, all cohorts"))),
     tabs([
       { label: `LGD to TermStep ${cfg.target_ts}`, render: () => h("div", null,
           facts([["Validation, own row less derived", `${fmt.signed(s.validation_min)} to ${fmt.signed(s.validation_max)}`],
