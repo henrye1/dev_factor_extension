@@ -51,6 +51,10 @@ function rail(avg, method) {
   return el;
 }
 
+// A download link that fetches under the busy panel instead of navigating, so a slow workbook
+// cannot be requested twice.
+const dl = (label) => (ev) => { ev.preventDefault(); api.download(ev.currentTarget.href, label).catch(reportError); };
+
 function facts(items) {
   return h("dl", { class: "facts" }, items.filter(Boolean).map(([k, v]) => h("div", null, h("dt", null, k), h("dd", null, v))));
 }
@@ -394,13 +398,13 @@ export async function zipView(pid, did, sid, ctx) {
         // Excel workbooks are rebuilt from the current inputs, so they wait for a fresh run
         result.stale
           ? h("button", { type: "button", disabled: true, title: "Run the scenario again to export to Excel" }, "Excel, values")
-          : h("a", { class: "btn", href: `${base}/export?kind=values` }, "Excel, values"),
+          : h("a", { class: "btn", href: `${base}/export?kind=values`, onclick: dl("Building the values workbook…") }, "Excel, values"),
         result.stale
           ? h("button", { type: "button", disabled: true, title: "Run the scenario again to export to Excel" }, "Excel, live formulas")
-          : h("a", { class: "btn", href: `${base}/export?kind=formula`, onclick: () => toast("Building the formula workbook. Large zips take up to a minute.") }, "Excel, live formulas"),
-        h("a", { class: "btn", href: `${base}/export?kind=csv&table=results` }, "CSV, results"),
-        h("a", { class: "btn", href: `${base}/export?kind=csv&table=lgd_ts` }, "CSV, LGD to Target"),
-        h("a", { class: "btn", href: `${base}/export?kind=csv&table=tail_fit` }, "CSV, tail fit"))),
+          : h("a", { class: "btn", href: `${base}/export?kind=formula`, onclick: dl("Building the formula workbook. Large zips take up to a minute…") }, "Excel, live formulas"),
+        h("a", { class: "btn", href: `${base}/export?kind=csv&table=results`, onclick: dl("Preparing the CSV…") }, "CSV, results"),
+        h("a", { class: "btn", href: `${base}/export?kind=csv&table=lgd_ts`, onclick: dl("Preparing the CSV…") }, "CSV, LGD to Target"),
+        h("a", { class: "btn", href: `${base}/export?kind=csv&table=tail_fit`, onclick: dl("Preparing the CSV…") }, "CSV, tail fit"))),
     tabs([
       { label: `LGD to TermStep ${cfg.target_ts}`, render: () => h("div", null,
           facts([["Validation, own row less derived", `${fmt.signed(s.validation_min)} to ${fmt.signed(s.validation_max)}`],

@@ -170,7 +170,11 @@ export async function settingsView(pid, ctx) {
   const setLink = () => { dlLink.href = `/api/projects/${pid}/export/curves?scenario_id=${dlScn.value}`; };
   dlScn.addEventListener("change", setLink);
   if (project.scenarios.length) setLink();
-  dlLink.addEventListener("click", () => toast("Building the curves workbook for every cohort. This takes up to half a minute."));
+  dlLink.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    if (!project.scenarios.length) return;
+    api.download(dlLink.href, "Building the curves workbook for every cohort. This takes up to half a minute…").catch(reportError);
+  });
   const downloads = project.scenarios.length ? h("section", { class: "block" },
     h("header", null, h("h2", null, "Download curves")),
     h("p", { class: "muted" }, "One workbook per scenario: final LGD by TermStep for every cohort, each cohort's marginal recovery " +

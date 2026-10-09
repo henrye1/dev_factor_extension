@@ -242,7 +242,7 @@ export async function projectView(pid, ctx) {
         h("div", { class: "actions" },
           canEdit && matrix.datasets.length && matrix.scenarios.length ? runAllBtn : null,
           matrix.cells.length ? h("a", { class: "btn", href: `/api/projects/${pid}/export/summary`,
-            onclick: () => toast("Building the summary workbook: every zip and scenario with LGD by TermStep, marginal recoveries and analytics. This takes up to a minute.") }, "Download summary (Excel)") : null,
+            onclick: (ev) => { ev.preventDefault(); api.download(ev.currentTarget.href, "Building the summary workbook: every zip and scenario. This takes up to a minute…").catch(reportError); } }, "Download summary (Excel)") : null,
           h("a", { class: "btn", href: `#/p/${pid}/settings` }, "Members and curves"))),
       h("section", { class: "block" },
         h("header", null, h("h2", null, "Exposure-weighted selected LGD"),

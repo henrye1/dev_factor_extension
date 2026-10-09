@@ -1,7 +1,7 @@
 // Router and page frame.
 
 import { api, setSignedOutHandler } from "./api.js";
-import { h, clear, toast, reportError, openDialog, field, fmt, dataTable } from "./ui.js";
+import { h, clear, toast, reportError, openDialog, field, fmt, dataTable, beginBusy } from "./ui.js";
 import { projectView } from "./project.js";
 import { zipView } from "./zip.js";
 import { scenarioView } from "./scenario.js";
@@ -199,6 +199,7 @@ async function route() {
     const m = hash.match(re);
     if (!m) continue;
     main.classList.add("busy");
+    const endBusy = beginBusy({ block: true, label: "Loading…" });
     try {
       const page = await view(m);
       if (token !== navToken) return;                 // a newer navigation won
@@ -214,6 +215,7 @@ async function route() {
         h("a", { href: "#/projects" }, "Back to projects")));
     } finally {
       main.classList.remove("busy");
+      endBusy();
     }
     return;
   }

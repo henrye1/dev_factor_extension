@@ -152,3 +152,53 @@ export function columnsToRows(table) {
   }
   return rows;
 }
+
+// --------------------------------------------------------------------- busy
+// One indicator for the whole app. `beginBusy` returns a function that ends that piece of
+// work; the indicator stays while any piece is running. Blocking work (anything that changes
+// data, a download, a page load) covers the page and swallows clicks straight away, and shows
+// its panel after a short delay so a quick save does not flash. Reads only show the top bar.
+const busyState = { count: 0, blocking: 0, labels: [], timer: null };
+
+function paintBusy() {
+  const el = document.getElementById("busy");
+  if (!el) return;
+  const on = busyState.count > 0;
+  el.classList.toggle("on", on);
+  el.classList.toggle("quiet", on && busyState.blocking === 0);
+  const label = busyState.labels[busyState.labels.length - 1] || "Working…";
+  el.querySelector(".label").textContent = label;
+  if (!on) {
+    el.classList.remove("show");
+    clearTimeout(busyState.timer);
+    busyState.timer = null;
+  } else if (busyState.blocking > 0 && !busyState.timer && !el.classList.contains("show")) {
+    busyState.timer = setTimeout(() => { busyState.timer = null; if (busyState.blocking > 0) el.classList.add("show"); }, 250);
+  }
+}
+
+export function beginBusy({ block = true, label = "" } = {}) {
+  busyState.count += 1;
+  if (block) {
+    busyState.blocking += 1;
+    if (label) busyState.labels.push(label);
+  }
+  paintBusy();
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    busyState.count -= 1;
+    if (block) {
+      busyState.blocking -= 1;
+      if (label) busyState.labels.splice(busyState.labels.lastIndexOf(label), 1);
+    }
+    paintBusy();
+  };
+}
+
+// Runs `fn` under the blocking indicator and returns its result.
+export async function withBusy(label, fn) {
+  const end = beginBusy({ block: true, label });
+  try { return await fn(); } finally { end(); }
+}

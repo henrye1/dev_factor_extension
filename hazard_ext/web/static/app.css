@@ -211,6 +211,27 @@ dialog .foot { display: flex; justify-content: flex-end; gap: .5rem; margin-top:
 #toast div { background: var(--ink); color: #fff; padding: .55rem .9rem; border-radius: 4px; max-width: 460px; box-shadow: 0 4px 14px rgba(20, 33, 61, .3); }
 #toast div.bad { background: var(--bad); }
 
+/* ------------------------------------------------------------------ busy */
+/* While a request that changes something runs, or a page loads, #busy sits over the page
+   and swallows clicks, so a slow run cannot be started twice. Reads show only the bar. */
+#busy { display: none; position: fixed; inset: 0; z-index: 60; }
+#busy.on { display: block; }
+#busy.quiet { pointer-events: none; }
+#busy .bar { position: absolute; top: 0; left: 0; height: 3px; width: 0; background: var(--accent); transition: width .4s; }
+#busy.on .bar { width: 85%; transition: width 12s cubic-bezier(.1, .7, .2, 1); }
+#busy .panel {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  display: flex; align-items: center; gap: .7rem; background: var(--ink); color: #fff;
+  padding: .7rem 1.1rem; border-radius: 5px; box-shadow: 0 8px 28px rgba(20, 33, 61, .3);
+  opacity: 0; transition: opacity .15s;
+}
+#busy.show .panel { opacity: 1; }
+#busy.show { background: rgba(20, 33, 61, .12); }
+#busy.quiet .panel { display: none; }
+#busy .spin { width: 16px; height: 16px; border: 2px solid rgba(255, 255, 255, .35); border-top-color: #fff; border-radius: 50%; animation: busyspin .8s linear infinite; }
+@keyframes busyspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #busy .spin { animation: none; border-top-color: rgba(255, 255, 255, .35); } }
+
 /* ------------------------------------------------------------------ sign in */
 .signin { max-width: 380px; margin: 9vh auto 0; }
 .signin h1 { margin-bottom: .3rem; }
