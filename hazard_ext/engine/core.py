@@ -587,3 +587,56 @@ def _compute(data: RecoveryData, params: Params) -> ExtensionResult:
         shape_stats={"lgd": lgd_ext, "lgd_h": lgd_h, "und": und_ext, "lgd_obs": lgd_obs,
                      "und_obs": und_obs, "tri_width": width},
     )
+
+
+SHAPE_FORMULAS = {
+    "exp": "s(b) = e^(−λb)",
+    "power": "s(b) = b^(−γ)",
+    "logn": "s(b) = (1/b) · exp(−(ln b − μ)² / (2σ²))",
+}
+
+
+def curve_parameters(res: ExtensionResult, ts: int = 1) -> list[dict]:
+    """The parameters behind each forecast curve, for publishing next to the curves.
+
+    One entry per shape: the formula, each parameter with its fitted and used value (and
+    whether an override replaced the fit), the level (scale) that anchors the shape on the
+    window of TermStep ``ts`` and on the base row, and the derived figures (half-life, peak
+    bucket, median). The extended RecoveryPct of row ts beyond its last credible bucket is
+    max(floor, scale(ts) × s(b)).
+    """
+    cfg, p, T = res.config, res.params, res.tail_fit
+    i = max(0, min(res.n, int(ts)) - 1)
+    b = max(0, min(res.n, int(p["base_ts"])) - 1)
+
+    def val(x):
+        x = None if x is None else float(x)
+        return None if x is None or not math.isfinite(x) else x
+
+    rows = []
+    for k, key in enumerate(SHAPES):
+        if key == "exp":
+            params = [{"name": "λ", "fitted": val(cfg["lam_fit"]), "used": val(cfg["lam"]),
+                       "override": p.get("lambda_override") is not None}]
+            derived = {"half_life": val(cfg["half_life"])}
+        elif key == "power":
+            params = [{"name": "γ", "fitted": val(cfg["gam_fit"]), "used": val(cfg["gam"]),
+                       "override": p.get("gamma_override") is not None}]
+            derived = {}
+        else:
+            params = [{"name": "μ", "fitted": val(cfg["mu_fit"]), "used": val(cfg["mu"]),
+                       "override": p.get("mu_override") is not None},
+                      {"name": "σ", "fitted": val(cfg["sigma_fit"]), "used": val(cfg["sigma"]),
+                       "override": p.get("sigma_override") is not None}]
+            derived = {"peak_bucket": val(cfg["logn_mode"]), "median_bucket": val(cfg["logn_median"])}
+        scale_key = {"exp": "scale_exp", "power": "scale_power", "logn": "scale_logn"}[key]
+        rows.append({
+            "shape": key, "label": SHAPE_LABELS[key], "formula": SHAPE_FORMULAS[key],
+            "selected": k == int(cfg["method"]) - 1, "params": params, "derived": derived,
+            "scale_ts": val(T[scale_key][i]), "scale_base": val(T[scale_key][b]),
+            "last_cred_ts": int(T["last_cred"][i]),
+            "fit_window": {"from": int(p["fit_start"]), "to": int(cfg["ref_last_cred"]), "ref_ts": int(p["ref_ts"]),
+                           "points": int(cfg["logn_points"] if key == "logn" else cfg["fit_points"])},
+            "floor": float(p["floor"]),
+        })
+    return rows

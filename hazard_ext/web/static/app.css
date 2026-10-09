@@ -273,6 +273,7 @@ button.help:hover { background: var(--accent-wash); border-color: var(--accent);
 .assume > div { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; padding: .25rem 0; border-bottom: 1px solid var(--rule); }
 .assume .k { color: var(--ink-2); display: inline-flex; align-items: center; gap: .3rem; }
 .assume .v { font-weight: 600; white-space: nowrap; }
+tr.selectedrow td { background: var(--accent-wash); font-weight: 600; }
 .assume .v.ovr { color: var(--accent); background: var(--accent-wash); padding: 0 .35rem; border-radius: 3px; }
 .vintage { display: grid; gap: .35rem; }
 .vintage [hidden] { display: none; }

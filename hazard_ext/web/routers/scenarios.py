@@ -8,7 +8,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...engine.core import EngineError
+from ...engine.core import EngineError, curve_parameters
 from ...engine.params import DEFAULTS, Params, clean_overrides, merge_params
 from ...engine.parse import ParseError
 from ..deps import Access, csrf_guard, current_user, get_db, project_access
@@ -340,7 +340,8 @@ def compare_curves(sid: int, did: int, request: Request, ts: int = 1, basis: str
         raise HTTPException(422, "basis must be face or outstanding")
     r = _result(db, access.project.id, sid, did)
     try:
-        cur = recompute(db, request.app.state.cache, r).curve(ts)
+        res = recompute(db, request.app.state.cache, r)
+        cur = res.curve(ts)
     except (EngineError, ParseError, StorageError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from None
     row, c_face = _applied_for(db, r)
@@ -375,6 +376,7 @@ def compare_curves(sid: int, did: int, request: Request, ts: int = 1, basis: str
         "series": {k: [None if not np.isfinite(x) else float(x) for x in v] for k, v in shown.items()},
         "applied_label": row.label if row is not None else None, "applied_basis": row.basis if row is not None else None,
         "method_label": cfg["method_label"], "vintages": cfg.get("vintage_start_effective"), "cumulative": table,
+        "curve_params": curve_parameters(res, ts),
     }
 
 

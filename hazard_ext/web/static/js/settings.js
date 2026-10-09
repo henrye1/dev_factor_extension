@@ -141,7 +141,17 @@ export async function settingsView(pid, ctx) {
           { label: `Ours (${c.method_label})`, key: "ours", num: true, fmt: (v) => fmtPct(v) },
           { label: "Client applied", key: "client", num: true, fmt: (v) => fmtPct(v) },
           { label: "Difference", key: "difference", num: true, fmt: (v) => (v === null ? "–" : (v >= 0 ? "+" : "−") + (Math.abs(v) * 100).toFixed(2) + "%") },
-        ], c.cumulative, { plain: true }));
+        ], c.cumulative, { plain: true }),
+        h("p", { class: "muted small" }, `The parameters behind our three curves at TermStep ${ts}. Beyond the last credible bucket, ` +
+          "RecoveryPct(ts, b) = max(floor, scale × s(b))."),
+        dataTable([
+          { label: "Shape", key: "label", fmt: (v, r) => v + (r.selected ? " (selected)" : "") },
+          { label: "Formula", key: "formula" },
+          { label: "Parameters used (fitted)", key: "params", fmt: (ps) => ps.map((p) => p.used === null ? `${p.name} undefined`
+              : `${p.name} = ${p.used.toFixed(4)}${p.override ? ` (override, fitted ${p.fitted === null ? "–" : p.fitted.toFixed(4)})` : ""}`).join("; ") },
+          { label: "Fit window", key: "fit_window", fmt: (w) => `TermStep ${w.ref_ts}, buckets ${w.from} to ${w.to}, ${w.points} points` },
+          { label: `Scale at TermStep ${ts}`, key: "scale_ts", num: true, fmt: (v) => (v === null ? "–" : v.toPrecision(6)) },
+        ], c.curve_params, { plain: true, rowClass: (r) => (r.selected ? "selectedrow" : "") }));
     } catch (err) {
       if (err.status === 404) {
         clear(cmpHost).classList.add("chart");

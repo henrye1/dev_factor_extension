@@ -2,6 +2,9 @@
 
 Sheets
   Notes                   what each sheet holds and the scenario's parameters
+  Curve_parameters        per cohort: the parameters behind each forecast curve (fitted and used
+                          λ, γ, μ, σ, the fit window, the level on TermStep 1 and the base row)
+  Scale_by_TermStep       the level (scale) of each shape on every TermStep's anchor window
   LGD_by_TermStep         final LGD by TermStep, one column per cohort, then LGD within the
                           valuation horizon per cohort
   Marginal_face           month since default down the side; per cohort our selected extended
@@ -22,7 +25,7 @@ import numpy as np
 import xlsxwriter
 
 from ..engine.applied import to_outstanding
-from ..engine.core import ExtensionResult
+from ..engine.core import ExtensionResult, curve_parameters
 from .summary_xlsx import final_marginals, vintage_text
 from .tables import PARAM_LABELS
 
@@ -72,6 +75,7 @@ def build_curves_workbook(project_name: str, scenario_name: str, items: list[dic
                                    "valign": "top", "border": 1}),
             "lgd": wb.add_format({"num_format": "0.0000"}),
             "tri": wb.add_format({"num_format": "0.00000%"}),
+            "num": wb.add_format({"num_format": "0.000000"}),
         }
         items = sorted(items, key=lambda it: it["zip"])
 
@@ -81,6 +85,8 @@ def build_curves_workbook(project_name: str, scenario_name: str, items: list[dic
         ws.set_column(1, 1, 110)
         ws.write_string(0, 0, f"{project_name} – {scenario_name}: LGD and recovery curves for every cohort", f["title"])
         lines = [
+            ("Curve_parameters", "The parameters behind each cohort's forecast curves: fitted and used λ, γ, μ and σ, the regression window, and the level (scale) that anchors each shape on TermStep 1 and on the base row. Beyond the last credible bucket, RecoveryPct(ts, b) = max(floor, scale(ts) × shape(b))."),
+            ("Scale_by_TermStep", "The scale of each shape on every TermStep: Σ observed RecoveryPct over the anchor window ÷ Σ shape over the window."),
             ("LGD_by_TermStep", "Final LGD by TermStep per cohort (own extended row to LastTS, base row rolled forward beyond), then LGD within the valuation horizon."),
             ("Marginal_face", "Marginal recovery by month since default: cash in the month as a share of the balance at default. Our selected extended curve from TermStep 1 per cohort, and the client's applied curve where uploaded."),
             ("Marginal_outstanding", "The same curves as a share of the balance still outstanding at the start of each month (how a client who applies rates to the outstanding balance sees them)."),
@@ -112,6 +118,57 @@ def build_curves_workbook(project_name: str, scenario_name: str, items: list[dic
             ws.write_string(r, 1, f"{cfg['method_label']}; {vintage_text(cfg).lower()}; "
                                   f"client applied curve {it.get('applied_label') or 'none'}; "
                                   f"{'out of date' if it['stale'] else 'current'}")
+
+        # ------------------------------------------------------ Curve_parameters
+        ws = wb.add_worksheet("Curve_parameters")
+        ws.write_string(0, 0, f"{scenario_name}: the parameters behind every cohort's forecast curves", f["title"])
+        ws.write_string(1, 0, "Shapes: exponential e^(−λb); power law b^(−γ); log-normal (1/b)·exp(−(ln b − μ)²/(2σ²)). Each is fitted on "
+                              "the reference row from FitStart to its last credible bucket and scaled to the anchor window of each "
+                              "TermStep. 'Used' differs from 'fitted' where the scenario set an override.", f["note"])
+        heads = ["Cohort", "Selected method", "Vintages", "Reference TermStep", "FitStart", "Fit to bucket", "Fit points",
+                 "λ fitted", "λ used", "λ override", "Half-life (buckets)", "γ fitted", "γ used", "γ override",
+                 "Log-normal points", "μ fitted", "μ used", "μ override", "σ fitted", "σ used", "σ override",
+                 "Log-normal peak bucket", "Log-normal median bucket", "Floor",
+                 "Scale exponential, TermStep 1", "Scale power, TermStep 1", "Scale log-normal, TermStep 1",
+                 "Base TermStep", "Scale exponential, base row", "Scale power, base row", "Scale log-normal, base row",
+                 "Last credible bucket, TermStep 1"]
+        ws.set_row(3, 48)
+        for c, h_ in enumerate(heads):
+            ws.write_string(3, c, h_, f["head"])
+        for i, it in enumerate(items):
+            res = it["res"]
+            cp = {row_["shape"]: row_ for row_ in curve_parameters(res, 1)}
+            e_, pw_, ln_ = cp["exp"], cp["power"], cp["logn"]
+            cfg = res.config
+            row_ = [it["zip"], cfg["method_label"], vintage_text(cfg), e_["fit_window"]["ref_ts"], e_["fit_window"]["from"],
+                    e_["fit_window"]["to"], e_["fit_window"]["points"],
+                    e_["params"][0]["fitted"], e_["params"][0]["used"], "yes" if e_["params"][0]["override"] else "",
+                    e_["derived"]["half_life"], pw_["params"][0]["fitted"], pw_["params"][0]["used"],
+                    "yes" if pw_["params"][0]["override"] else "", ln_["fit_window"]["points"],
+                    ln_["params"][0]["fitted"], ln_["params"][0]["used"], "yes" if ln_["params"][0]["override"] else "",
+                    ln_["params"][1]["fitted"], ln_["params"][1]["used"], "yes" if ln_["params"][1]["override"] else "",
+                    ln_["derived"]["peak_bucket"], ln_["derived"]["median_bucket"], e_["floor"],
+                    e_["scale_ts"], pw_["scale_ts"], ln_["scale_ts"], int(res.params["base_ts"]),
+                    e_["scale_base"], pw_["scale_base"], ln_["scale_base"], e_["last_cred_ts"]]
+            for c, v in enumerate(row_):
+                if isinstance(v, str):
+                    ws.write_string(4 + i, c, v)
+                else:
+                    _num(ws, 4 + i, c, v, None if c in (3, 4, 5, 6, 14, 27, 31) else f["num"])
+        ws.set_column(0, 0, 12)
+        ws.set_column(1, 2, 22)
+        ws.set_column(3, len(heads) - 1, 14)
+        ws.freeze_panes(4, 1)
+
+        # ----------------------------------------------------- Scale_by_TermStep
+        ws = wb.add_worksheet("Scale_by_TermStep")
+        scale_cols = []
+        for it in items:
+            for key, lab in (("scale_exp", "exponential"), ("scale_power", "power"), ("scale_logn", "log-normal")):
+                scale_cols.append((f"{it['zip']} – scale {lab}", np.asarray(it["res"].tail_fit[key], dtype=float)))
+        _wide(ws, f, f"{scenario_name}: scale of each shape by TermStep",
+              "The level that anchors the shape on the TermStep's window of credible buckets; blank where the shape is undefined.",
+              "TermStep", scale_cols, f["num"])
 
         # ------------------------------------------------------- LGD_by_TermStep
         ws = wb.add_worksheet("LGD_by_TermStep")

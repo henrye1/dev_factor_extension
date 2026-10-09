@@ -244,6 +244,39 @@ export async function zipView(pid, did, sid, ctx) {
       ["Own rows to TermStep", String(cfg.last_ts)],
     ]));
 
+  // ------------------------------------------------ forecast curve parameters
+  // Every number behind the three forecast curves: the shape's parameters as fitted and as
+  // used, and the level that anchors the shape on TermStep 1 and on the base row.
+  const TF = pay.tail_fit;
+  const baseRow = Math.max(0, Math.min(pay.n, prm.base_ts) - 1);
+  const pv = (fitted, used, over, d) => fitted === null && used === null ? "undefined"
+    : `${fmt.num(used, d)}${over ? " (override, fitted " + fmt.num(fitted, d) + ")" : ""}`;
+  const curveRows = [
+    { shape: "Exponential", formula: "s(b) = e^(−λb)", params: `λ = ${pv(cfg.lam_fit, cfg.lam, prm.lambda_override !== null, 4)}`,
+      extra: cfg.half_life === null ? blank : `half-life ${cfg.half_life.toFixed(1)} buckets`, k: "scale_exp", sel: cfg.method === 1 },
+    { shape: "Power law", formula: "s(b) = b^(−γ)", params: `γ = ${pv(cfg.gam_fit, cfg.gam, prm.gamma_override !== null, 3)}`,
+      extra: blank, k: "scale_power", sel: cfg.method === 2 },
+    { shape: "Log-normal", formula: "s(b) = (1/b)·exp(−(ln b − μ)² / (2σ²))",
+      params: `μ = ${pv(cfg.mu_fit, cfg.mu, prm.mu_override !== null, 3)}; σ = ${pv(cfg.sigma_fit, cfg.sigma, prm.sigma_override !== null, 3)}`,
+      extra: cfg.logn_mode === null || cfg.logn_mode === undefined ? blank : `peak at bucket ${cfg.logn_mode.toFixed(1)}, median ${cfg.logn_median.toFixed(1)}`,
+      k: "scale_logn", sel: cfg.method === 3 },
+  ].map((r) => ({ ...r, shape: r.shape + (r.sel ? " (selected)" : ""), scale1: TF[r.k][0], scaleBase: TF[r.k][baseRow] }));
+  const six = (v) => (v === null || v === undefined ? blank : v.toPrecision(6));
+  const curveParams = h("section", { class: "block" },
+    h("header", null, h("h2", null, "Forecast curve parameters"),
+      h("span", { class: "muted small" },
+        `Fitted on TermStep ${prm.ref_ts}, buckets ${prm.fit_start} to ${cfg.ref_last_cred} (${cfg.fit_points} points` +
+        `${cfg.logn_points !== cfg.fit_points ? `, ${cfg.logn_points} for the log-normal` : ""}). ` +
+        `Beyond the last credible bucket, RecoveryPct(ts, b) = max(${prm.floor}, scale(ts) × s(b)).`)),
+    dataTable([
+      { label: "Shape", key: "shape" },
+      { label: "Formula", key: "formula" },
+      { label: "Parameters used (fitted)", key: "params" },
+      { label: "Derived", key: "extra" },
+      { label: "Scale, TermStep 1", key: "scale1", num: true, fmt: six },
+      { label: `Scale, base row ${prm.base_ts}`, key: "scaleBase", num: true, fmt: six },
+    ], curveRows, { plain: true, rowClass: (r) => (r.sel ? "selectedrow" : "") }));
+
   // ----------------------------------------------------------------- charts
   // charts stop at the last TermStep that has data; the tables keep every row
   const ts = R.ts.filter((t) => t <= cfg.last_data_ts), T = L.ts;
@@ -422,7 +455,7 @@ export async function zipView(pid, did, sid, ctx) {
                        canApply: canEdit, onApplied: ctx.route }) : null;
   return {
     trail,
-    node: h("div", null, head, notices, assumptions, headline,
+    node: h("div", null, head, notices, assumptions, headline, curveParams,
       h("div", { class: "charts" }, cA, cC, cE, cB, cD, cF), tables, assistant),
     after: drawCharts,
   };

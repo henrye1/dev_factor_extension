@@ -372,6 +372,9 @@ def test_applied_curves_compare_without_touching_the_calculation(world):
     cf = world.viewer.get(f"/api/projects/{pid}/results/{sid}/{d44}/compare_curves?ts=1&basis=face").json()
     co = world.viewer.get(f"/api/projects/{pid}/results/{sid}/{d44}/compare_curves?ts=1&basis=outstanding").json()
     assert cf["applied_label"] == "44" and cf["selected"] == "logn" and cf["series"]["applied"][0] == pytest.approx(0.05)
+    cp = {p_["shape"]: p_ for p_ in cf["curve_params"]}
+    assert cp["logn"]["selected"] and cp["logn"]["params"][0]["name"] == "μ" and cp["logn"]["scale_ts"] > 0
+    assert cp["exp"]["params"][0]["fitted"] == pytest.approx(0.0528, abs=1e-3) and cp["exp"]["formula"].startswith("s(b)")
     assert set(cf["series"]) == {"observed", "exp", "power", "logn", "applied"} and "reference_label" not in cf
     assert co["series"]["applied"][0] == pytest.approx(0.05) and co["series"]["applied"][1] == pytest.approx(0.05)   # back on its own basis
     assert cf["series"]["exp"][0] == pytest.approx(co["series"]["exp"][0])                                        # first step is the same on both bases
@@ -515,8 +518,17 @@ def test_curves_workbook_for_one_scenario(world):
     r = world.viewer.get(f"/api/projects/{pid}/export/curves?scenario_id={sid}")
     assert r.status_code == 200, r.text
     wb = openpyxl.load_workbook(io.BytesIO(r.content), read_only=True)
-    assert wb.sheetnames == ["Notes", "LGD_by_TermStep", "Marginal_face", "Marginal_outstanding", "Cumulative_face", "M_VB44", "M_VBALL"]
+    assert wb.sheetnames == ["Notes", "Curve_parameters", "Scale_by_TermStep", "LGD_by_TermStep", "Marginal_face",
+                             "Marginal_outstanding", "Cumulative_face", "M_VB44", "M_VBALL"]
     e = _engine_44()
+    cp = wb["Curve_parameters"]
+    heads = [c.value for c in next(cp.iter_rows(min_row=4, max_row=4))]
+    row44 = [c.value for c in next(cp.iter_rows(min_row=5, max_row=5))]
+    assert row44[0] == "VB44" and row44[heads.index("λ fitted")] == pytest.approx(e.config["lam_fit"], abs=1e-12)
+    assert row44[heads.index("μ used")] == pytest.approx(e.config["mu"], abs=1e-12)
+    assert row44[heads.index("Scale log-normal, TermStep 1")] == pytest.approx(e.tail_fit["scale_logn"][0], rel=1e-12)
+    sc = wb["Scale_by_TermStep"]
+    assert [c.value for c in next(sc.iter_rows(min_row=4, max_row=4))][1] == "VB44 – scale exponential"
     ws = wb["LGD_by_TermStep"]
     heads = [c.value for c in next(ws.iter_rows(min_row=4, max_row=4))]
     assert heads[:3] == ["TermStep", "VB44 – final LGD", "VBALL – final LGD"]
