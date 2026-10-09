@@ -19,7 +19,7 @@ from ...export.tables import TABLES, csv_table
 from ...export.values_xlsx import build_values_workbook
 from ..deps import Access, get_db, project_access
 from ..models import Result, Scenario, iso
-from ..runner import applied_curves, project_curves, recompute
+from ..runner import applied_curves, recompute
 from ..storage import StorageError
 from .scenarios import _result
 
@@ -59,8 +59,7 @@ def export_result(sid: int, did: int, request: Request, kind: str = "values", ta
         if kind == "values":
             body = build_values_workbook(res, r.dataset.name, r.scenario.name, r.dataset.filename)
         else:
-            body = build_formula_workbook(res, cache.get(r.dataset.blob_key), r.dataset.name,
-                                          r.scenario.name, project_curves(db, access.project.id))
+            body = build_formula_workbook(res, cache.get(r.dataset.blob_key), r.dataset.name, r.scenario.name)
     except (EngineError, StorageError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from None
     return _download(body, f"{stem}_{kind}.xlsx", XLSX)

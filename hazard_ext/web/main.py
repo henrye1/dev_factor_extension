@@ -18,7 +18,7 @@ from .config import Settings
 from .db import init_db, make_engine, make_session_factory
 from .models import User
 from .routers import agent, auth, exports, projects, scenarios
-from .runner import DataCache
+from .runner import DataCache, migrate_three_methods
 from .security import COOKIE_NAME, LoginThrottle, SessionSigner, hash_password, password_problem
 from .storage import make_blob_store
 
@@ -56,6 +56,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.auto_create_schema:
             init_db(app.state.engine, settings)
         bootstrap_admin(app.state.session_factory, settings)
+        migrate_three_methods(app.state.session_factory)
         yield
         app.state.engine.dispose()
 

@@ -253,6 +253,9 @@ button.help:hover { background: var(--accent-wash); border-color: var(--accent);
 .assume .k { color: var(--ink-2); display: inline-flex; align-items: center; gap: .3rem; }
 .assume .v { font-weight: 600; white-space: nowrap; }
 .assume .v.ovr { color: var(--accent); background: var(--accent-wash); padding: 0 .35rem; border-radius: 3px; }
+.vintage { display: grid; gap: .35rem; }
+.vintage [hidden] { display: none; }
+.matrix .vint { display: inline-block; font-size: .72rem; color: var(--ink-2); border: 1px solid var(--rule); border-radius: 3px; padding: 0 .3rem; margin-top: .15rem; }
 .zipnav { display: inline-flex; align-items: center; gap: .25rem; }
 .zipnav button { padding: .38rem .55rem; }
 

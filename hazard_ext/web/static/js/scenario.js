@@ -11,7 +11,6 @@ export async function scenarioView(pid, sid, ctx) {
   const canEdit = project.role !== "viewer";
   const eventTypes = [...new Set(project.datasets.flatMap((d) => d.profile.event_types || []))];
   const formCtx = {
-    curves: project.curves.map((c) => c.label),
     eventTypes: eventTypes.length ? eventTypes : ["Lifetime", "LifetimeSingle", "TwelveMonthSingle"],
   };
   const cells = new Map(matrix.cells.filter((c) => c.scenario_id === sid).map((c) => [c.dataset_id, c]));

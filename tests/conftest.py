@@ -38,8 +38,9 @@ class Golden:
         df = pd.DataFrame(z["raw"], columns=NUM_COLUMNS)
         df.insert(0, "EventType", z["events"])
         self.data = from_raw_frame(df[COLUMNS], category=str(self.config[CONFIG_KEYS["client_cohort"]]))
-        self.params = {k: self.config[label] for k, label in CONFIG_KEYS.items()}
-        self.params["client_cohort"] = str(self.params["client_cohort"])
+        self.params = {k: self.config[label] for k, label in CONFIG_KEYS.items() if k != "client_cohort"}
+        # the workbooks' method 3 was the removed client-curve shape; the golden comparisons run on method 1
+        self.params["method"] = 1
         self.params["target_ts"] = 300
         self.params["event_type"] = self.config["EventType"]
         cohorts = [str(c) for c in z["cohorts"]]
@@ -51,7 +52,7 @@ _prototype: dict = {}
 
 def prototype_curves() -> dict[str, np.ndarray]:
     """The six July 2026 prototype curves (11, 15, 22, 23, 25, 44; t = 1..553) from the workbooks'
-    Client_Curve sheet. The app has no built-in curves; tests upload these where method 3 needs one."""
+    Client_Curve sheet. Used only as applied-curve test data: the engine takes no curves."""
     if not _prototype:
         _prototype.update(Golden("vb44").curves)
     return _prototype

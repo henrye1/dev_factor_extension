@@ -13,7 +13,7 @@ from ...engine.params import DEFAULTS, Params, clean_overrides, merge_params
 from ...engine.parse import ParseError
 from ..deps import Access, csrf_guard, current_user, get_db, project_access
 from ..models import iso, Dataset, Result, Scenario, ScenarioOverride, User, utcnow
-from ..runner import applied_curves, mark_stale, project_curves, recompute, run_one
+from ..runner import applied_curves, is_legacy_payload, mark_stale, recompute, run_one
 from ...engine.applied import implied_lgd, rate_at, to_face, to_outstanding
 import numpy as np
 from ..storage import StorageError
@@ -53,7 +53,7 @@ def result_meta(r: Result | None) -> dict:
     if r is None:
         return {"status": "none"}
     return {"status": r.status, "error": r.error, "stale": r.stale, "summary": r.summary,
-            "curve_label": r.curve_label, "computed_at": iso(r.computed_at)}
+            "legacy": r.status == "ok" and is_legacy_payload(r.payload), "computed_at": iso(r.computed_at)}
 
 
 def scenario_out(s: Scenario, detail: bool = False) -> dict:
@@ -110,11 +110,8 @@ def list_scenarios(access: Access = Depends(project_access()), db: Session = Dep
 def create_scenario(body: ScenarioIn, access: Access = Depends(project_access("editor")),
                     db: Session = Depends(get_db)):
     pid = access.project.id
-    # New scenarios start on method 1, which needs no reference curve; the engine default stays 3
-    # so that Params() still equals the workbook Config.
-    params = {"method": 1, **body.params}
     s = Scenario(project_id=pid, name=_check_name(db, pid, body.name),
-                 description=body.description.strip(), params=_full_params(params),
+                 description=body.description.strip(), params=_full_params(body.params),
                  created_by=access.user.id)
     db.add(s)
     db.commit()
@@ -222,10 +219,9 @@ def run_scenario(sid: int, body: RunIn, request: Request,
         datasets = list(db.execute(select(Dataset).where(Dataset.project_id == pid).order_by(Dataset.name)).scalars())
     if not datasets:
         raise HTTPException(400, "Upload at least one zip before running a scenario")
-    curves = project_curves(db, pid)
     out = []
     for d in datasets:
-        r = run_one(db, request.app.state.cache, s, d, access.user, curves)
+        r = run_one(db, request.app.state.cache, s, d, access.user)
         out.append({"dataset_id": d.id, "dataset": d.name, **result_meta(r)})
     db.commit()
     return out
@@ -238,11 +234,10 @@ def run_everything(request: Request, access: Access = Depends(project_access("ed
     pid = access.project.id
     scenarios = list(db.execute(select(Scenario).where(Scenario.project_id == pid)).scalars())
     datasets = list(db.execute(select(Dataset).where(Dataset.project_id == pid)).scalars())
-    curves = project_curves(db, pid)
     n_ok = n_err = 0
     for s in scenarios:
         for d in datasets:
-            r = run_one(db, request.app.state.cache, s, d, access.user, curves)
+            r = run_one(db, request.app.state.cache, s, d, access.user)
             n_ok += r.status == "ok"
             n_err += r.status == "error"
     db.commit()
@@ -348,13 +343,12 @@ def compare_curves(sid: int, did: int, request: Request, ts: int = 1, basis: str
     face = {
         "observed": np.array([np.nan if v is None else v for v in cur["observed"]], dtype=float),
         "exp": np.array(cur["exp"], dtype=float), "power": np.array(cur["power"], dtype=float),
-        "reference": np.array([np.nan if v is None else v for v in cur["client"]], dtype=float),
-        "reference_curve": np.array([np.nan if v is None else v for v in cur["client_curve"]], dtype=float) if ts == 1 else None,
+        "logn": np.array([np.nan if v is None else v for v in cur["logn"]], dtype=float),
         "applied": rate_at(c_face, ts, mb)[1] if row is not None else None,
     }
     shown = {k: (to_outstanding(v) if basis == "outstanding" else v) for k, v in face.items() if v is not None}
     cfg = r.payload["config"]
-    sel = {1: "exp", 2: "power", 3: "reference"}[int(cfg["method"])]
+    sel = {1: "exp", 2: "power", 3: "logn"}[int(cfg["method"])]
     # cumulative recovery on the face basis at a few horizons, our selected tail against the client's curve
     marks = [m for m in (12, 24, 36, 48, 60, 120, 180, 240, 300, 360, 480) if m <= mb - ts + 1]
     if marks and marks[-1] != mb - ts + 1:
@@ -375,7 +369,7 @@ def compare_curves(sid: int, did: int, request: Request, ts: int = 1, basis: str
         "ts": ts, "basis": basis, "bucket": cur["bucket"], "last_cred": cur["last_cred"], "selected": sel,
         "series": {k: [None if not np.isfinite(x) else float(x) for x in v] for k, v in shown.items()},
         "applied_label": row.label if row is not None else None, "applied_basis": row.basis if row is not None else None,
-        "reference_label": cfg.get("client_cohort"), "method_label": cfg["method_label"], "cumulative": table,
+        "method_label": cfg["method_label"], "vintages": cfg.get("vintage_start_effective"), "cumulative": table,
     }
 
 

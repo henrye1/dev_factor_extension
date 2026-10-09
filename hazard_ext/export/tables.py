@@ -17,7 +17,7 @@ RESULT_COLUMNS = [
     ("file_floor_gap", "File LGD floor (file LGD − (1 − CumulativeSumPV))", "lgd6"),
     ("lgd_exp", "LGD – exponential", "lgd"),
     ("lgd_power", "LGD – power", "lgd"),
-    ("lgd_client", "LGD – reference curve shape", "lgd"),
+    ("lgd_logn", "LGD – log-normal", "lgd"),
     ("lgd_selected", "LGD – SELECTED", "lgd"),
     ("pv_original", "Original PV recoveries", "lgd"),
     ("pv_selected", "Selected PV recoveries", "lgd"),
@@ -37,7 +37,7 @@ LGD_TS_COLUMNS = [
     ("balance_factor", "Balance factor at ts (base row, selected)", "lgd"),
     ("derived_exp", "Derived LGD – exponential", "lgd"),
     ("derived_power", "Derived LGD – power", "lgd"),
-    ("derived_client", "Derived LGD – reference curve shape", "lgd"),
+    ("derived_logn", "Derived LGD – log-normal", "lgd"),
     ("derived_selected", "Derived LGD – selected", "lgd"),
     ("lgd_final", "LGD FINAL (own row to LastTS, derived beyond)", "lgd"),
     ("validation", "Validation: own-row − derived", "lgd"),
@@ -57,7 +57,7 @@ TAIL_COLUMNS = [
     ("sum_obs", "Σ observed over window", "num"),
     ("scale_exp", "Scale – exponential", "num"),
     ("scale_power", "Scale – power", "num"),
-    ("scale_client", "Scale – reference curve", "num"),
+    ("scale_logn", "Scale – log-normal", "num"),
 ]
 
 TABLES = {
@@ -76,15 +76,18 @@ PARAM_LABELS = [
     ("window", "Window W (buckets)"),
     ("fit_start", "FitStart bucket"),
     ("ref_ts", "Reference TermStep for λ / γ"),
-    ("method", "Method (1 = exponential, 2 = power law, 3 = reference curve shape)"),
-    ("client_cohort", "Reference curve (blank = the zip's Category1)"),
+    ("method", "Method (1 = exponential, 2 = power law, 3 = log-normal)"),
     ("horizon", "Horizon (months) for the short LGD"),
     ("horizon2", "Valuation horizon (months)"),
     ("lambda_override", "λ override (blank = fitted)"),
     ("gamma_override", "γ override (blank = fitted)"),
+    ("mu_override", "Log-normal μ override (blank = fitted)"),
+    ("sigma_override", "Log-normal σ override (blank = fitted)"),
     ("floor", "Hazard floor (per bucket)"),
     ("base_ts", "Base TermStep row for the derived LGD"),
     ("last_ts", "Last observed TermStep to use as-is (blank = last observed)"),
+    ("vintage_start", "Vintages from (YYYY-MM; blank = all vintages)"),
+    ("vintage_years", "Vintages within the last N years of the zip's latest vintage (blank = all)"),
 ]
 
 CONFIG_LABELS = [
@@ -98,12 +101,24 @@ CONFIG_LABELS = [
     ("gam_fit", "γ fitted"),
     ("lam", "λ used"),
     ("gam", "γ used"),
+    ("mu_fit", "Log-normal μ fitted"),
+    ("sigma_fit", "Log-normal σ fitted"),
+    ("mu", "Log-normal μ used"),
+    ("sigma", "Log-normal σ used"),
+    ("logn_mode", "Log-normal mode (bucket of peak recovery)"),
+    ("logn_median", "Log-normal median (bucket)"),
     ("half_life", "Half-life of the exponential tail (buckets)"),
     ("ref_last_cred", "Reference row last credible bucket"),
-    ("fit_points", "Points in the λ / γ regression"),
+    ("fit_points", "Points in the decay regression"),
     ("last_ts", "LastTS applied"),
-    ("client_cohort", "Reference curve used"),
     ("method_label", "Selected method"),
+    ("vintage_start_effective", "Vintages from (effective; blank = all)"),
+    ("vintage_first", "First vintage in the zip"),
+    ("vintage_last", "Last vintage in the zip"),
+    ("cohorts_included", "Cohorts included"),
+    ("cohorts_total", "Cohorts in the zip"),
+    ("exposure_share", "Share of at-default exposure included"),
+    ("last_obs_unfiltered", "Last observed bucket with all vintages"),
 ]
 
 AVERAGE_LABELS = [
@@ -111,16 +126,25 @@ AVERAGE_LABELS = [
     ("lgd_replica", "Replica LGD"),
     ("lgd_exp", "LGD exponential"),
     ("lgd_power", "LGD power"),
-    ("lgd_client", "LGD reference curve shape"),
+    ("lgd_logn", "LGD log-normal"),
     ("lgd_selected", "LGD SELECTED"),
     ("uplift", "Uplift (exposure-weighted)"),
     ("uplift_simple", "Uplift (simple average)"),
 ]
 
 
+def headed(columns, cfg: dict | None):
+    """The column definitions with the Original LGD heading adjusted for a vintage filter."""
+    label = (cfg or {}).get("lgd_file_label")
+    if not label:
+        return columns
+    return [(k, label if k == "lgd_file" else h, f) for k, h, f in columns]
+
+
 def csv_table(payload: dict, table: str) -> str:
     """One result table as CSV text."""
     key, columns = TABLES[table]
+    columns = headed(columns, payload.get("config"))
     data = payload[key]
     out = io.StringIO()
     w = csv.writer(out, lineterminator="\n")
@@ -142,9 +166,9 @@ def summary_workbook(project_name: str, matrix: dict) -> bytes:
     lgd = wb.add_format({"num_format": "0.0000"})
     money = wb.add_format({"num_format": "#,##0"})
     ws.write_string(0, 0, f"LGD tail extension – {project_name}", bold)
-    headings = ["Zip", "Category", "Scenario", "Status", "Stale", "Method", "Reference curve",
+    headings = ["Zip", "Category", "Scenario", "Status", "Stale", "Method", "Vintages",
                 "Discount rate", "Exposure (R)", "Original LGD", "Replica LGD", "LGD exponential",
-                "LGD power", "LGD reference curve shape", "LGD SELECTED", "Uplift (weighted)",
+                "LGD power", "LGD log-normal", "LGD SELECTED", "Uplift (weighted)",
                 "Uplift (simple)", "λ used", "γ used", "Warnings", "Error", "Computed at"]
     for c, h in enumerate(headings):
         ws.write(2, c, h, head)
@@ -161,10 +185,10 @@ def summary_workbook(project_name: str, matrix: dict) -> bytes:
         ws.write_string(row, 3, {"none": "not run"}.get(cell["status"], cell["status"]))
         ws.write_string(row, 4, "yes" if cell.get("stale") else "")
         ws.write_string(row, 5, sm.get("method_label", ""))
-        ws.write_string(row, 6, cell.get("curve_label", ""))
+        ws.write_string(row, 6, sm.get("vintages") or "")
         for c, (key, fmt) in enumerate([
                 ("rate", lgd), ("exposure_total", money), ("lgd_file", lgd), ("lgd_replica", lgd),
-                ("lgd_exp", lgd), ("lgd_power", lgd), ("lgd_client", lgd), ("lgd_selected", lgd),
+                ("lgd_exp", lgd), ("lgd_power", lgd), ("lgd_logn", lgd), ("lgd_selected", lgd),
                 ("uplift", lgd), ("uplift_simple", lgd), ("lam", lgd), ("gam", lgd)], start=7):
             if sm.get(key) is not None:
                 ws.write_number(row, c, sm[key], fmt)

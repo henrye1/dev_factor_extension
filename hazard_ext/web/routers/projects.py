@@ -17,9 +17,9 @@ from ...engine.applied import to_face
 from ...engine.curves import CurveError, parse_curve_file
 from ...engine.parse import ParseError, parse_zip
 from ..deps import Access, csrf_guard, current_user, get_db, project_access
-from ..models import (iso, CURVE_BASES, CURVE_KINDS, ROLES, ClientCurve, Dataset, Project,
+from ..models import (iso, utcnow, CURVE_BASES, CURVE_KINDS, ROLES, ClientCurve, Dataset, Project,
                       ProjectMember, Result, Scenario, User)
-from ..runner import applied_curves, mark_stale, project_curves
+from ..runner import applied_curves, mark_stale
 from ..storage import StorageError
 
 router = APIRouter(prefix="/api", dependencies=[Depends(csrf_guard)])
@@ -36,18 +36,9 @@ def dataset_out(d: Dataset) -> dict:
 
 
 def curve_rows(db: Session, project_id: int) -> list[dict]:
-    """The project's uploaded shape curves followed by the client's applied curves."""
+    """The client's applied curves uploaded to the project. Rows of the retired reference-shape
+    kind stay in the table but are not listed."""
     rows = []
-    for row in sorted(db.execute(select(ClientCurve).where(
-            ClientCurve.project_id == project_id, ClientCurve.kind == "shape")).scalars(), key=lambda c: c.label):
-        values = np.asarray(row.values, dtype=float)
-        nz = np.nonzero(values > 0)[0]
-        rows.append({
-            "label": row.label, "id": row.id, "kind": "shape", "basis": "face",
-            "source": "uploaded", "source_filename": row.source_filename,
-            "length": int(len(values)), "last_nonzero_t": int(nz[-1] + 1) if nz.size else 0,
-            "total": float(values.sum()),
-        })
     for label, row in sorted(applied_curves(db, project_id).items()):
         values = to_face(np.asarray(row.values, dtype=float), row.basis)
         nz = np.nonzero(values > 0)[0]
@@ -121,12 +112,18 @@ def get_project(access: Access = Depends(project_access()), db: Session = Depend
     p = access.project
     datasets = db.execute(select(Dataset).where(Dataset.project_id == p.id).order_by(Dataset.name)).scalars()
     scenarios = db.execute(select(Scenario).where(Scenario.project_id == p.id).order_by(Scenario.name)).scalars()
+    legacy = sum(1 for r in db.execute(
+        select(Result).join(Scenario, Scenario.id == Result.scenario_id)
+        .where(Scenario.project_id == p.id, Result.status == "ok", Result.stale.is_(True))).scalars()
+        if (r.effective_params or {}).get("method") == 3 and "lgd_client" in ((r.payload or {}).get("averages") or {}))
     return {
         "id": p.id, "name": p.name, "description": p.description, "role": access.role,
         "datasets": [dataset_out(d) for d in datasets],
         "scenarios": [{"id": s.id, "name": s.name, "description": s.description,
                        "updated_at": iso(s.updated_at)} for s in scenarios],
         "curves": curve_rows(db, p.id),
+        # results that still hold the removed reference-curve method's figures (need running again)
+        "legacy_method3": legacy,
     }
 
 
@@ -244,13 +241,25 @@ def upload_datasets(request: Request, files: list[UploadFile] = File(...),
                 raise ParseError(f"The file is larger than the {settings.max_upload_mb} MB limit")
             sha = digest.hexdigest()
             dup = db.execute(select(Dataset).where(Dataset.project_id == pid, Dataset.sha256 == sha)).scalar_one_or_none()
-            if dup is not None:
+            if dup is not None and (dup.profile or {}).get("has_runoff"):
                 raise ParseError(f"This zip is already in the project as '{dup.name}'")
             up.file.seek(0)
             data = parse_zip(up.file)
             profile = data.profile()
             key = f"p{pid}/{uuid.uuid4().hex}.npz"
             store.put(key, data.to_bytes())
+            if dup is not None:
+                # the same zip, stored before runoff_triangle was read: replace the parsed data in
+                # place so the zip keeps its id, name, overrides and results (now out of date)
+                old_key = dup.blob_key
+                dup.blob_key, dup.profile, dup.meta, dup.size_bytes = key, profile, data.meta, size
+                dup.uploaded_by, dup.uploaded_at = access.user.id, utcnow()
+                mark_stale(db, dataset_id=dup.id)
+                db.commit()
+                _drop_blobs(request, [old_key])
+                outcomes.append({"filename": filename, "ok": True, "updated": True, "dataset": dataset_out(dup),
+                                 "message": "Updated with vintage data"})
+                continue
             base = f"VB{data.category}" if data.category else PurePath(filename).stem
             ds = Dataset(project_id=pid, name=_unique_name(db, pid, base), category=data.category,
                          filename=filename, sha256=sha, size_bytes=size, meta=data.meta,
@@ -302,8 +311,7 @@ def patch_dataset(did: int, body: DatasetPatch, access: Access = Depends(project
     if body.category is not None and body.category.strip() != ds.category:
         if len(body.category.strip()) > 100:
             raise HTTPException(422, "The category is too long")
-        ds.category = body.category.strip()
-        mark_stale(db, dataset_id=ds.id)          # the default reference curve follows the category
+        ds.category = body.category.strip()       # only the applied-curve match follows the category
     db.commit()
     return dataset_out(ds)
 
@@ -326,37 +334,36 @@ def list_curves(access: Access = Depends(project_access()), db: Session = Depend
 
 
 @router.get("/projects/{pid}/curves/{label}")
-def get_curve(label: str, kind: str = "shape", access: Access = Depends(project_access()),
+def get_curve(label: str, kind: str = "applied", access: Access = Depends(project_access()),
               db: Session = Depends(get_db)):
-    """A curve's monthly values on the face basis (cash as a share of the balance at default)."""
-    if kind == "applied":
-        row = applied_curves(db, access.project.id).get(label)
-        if row is None:
-            raise HTTPException(404, "Curve not found")
-        return {"label": label, "kind": "applied", "basis": row.basis,
-                "values": to_face(np.asarray(row.values, dtype=float), row.basis).tolist(),
-                "values_as_uploaded": [float(x) for x in row.values]}
-    curves = project_curves(db, access.project.id)
-    if label not in curves:
+    """An applied curve's monthly values on the face basis (cash as a share of the balance at default)."""
+    if kind != "applied":
+        raise HTTPException(404, "Only the client's applied curves are kept; the reference-curve method was removed")
+    row = applied_curves(db, access.project.id).get(label)
+    if row is None:
         raise HTTPException(404, "Curve not found")
-    return {"label": label, "kind": "shape", "basis": "face", "values": curves[label].tolist()}
+    return {"label": label, "kind": "applied", "basis": row.basis,
+            "values": to_face(np.asarray(row.values, dtype=float), row.basis).tolist(),
+            "values_as_uploaded": [float(x) for x in row.values]}
 
 
 @router.post("/projects/{pid}/curves")
-def upload_curves(file: UploadFile = File(...), kind: str = Form("shape"), basis: str = Form("face"),
+def upload_curves(file: UploadFile = File(...), kind: str = Form("applied"), basis: str = Form("face"),
                   access: Access = Depends(project_access("editor")), db: Session = Depends(get_db)):
     """Upload a CSV or xlsx: first column t = 1, 2, ..., then one column per curve label.
 
-    kind: shape (replaces the method 3 tail shape) or applied (the client's curve, comparison only).
+    kind: applied (the client's applied curve, comparison only). The reference-shape kind was
+    retired with the reference-curve method and is refused.
     basis: face (share of the balance at default) or outstanding (share of the balance still
-    outstanding each month). Shape curves are always on the face basis.
+    outstanding each month).
     """
+    if kind == "shape":
+        raise HTTPException(422, "Reference curves are no longer used: method 3 is the log-normal shape fitted to "
+                                 "the zip's own data. Upload the client's curves as applied curves for comparison")
     if kind not in CURVE_KINDS:
-        raise HTTPException(422, "kind must be shape or applied")
+        raise HTTPException(422, "kind must be applied")
     if basis not in CURVE_BASES:
         raise HTTPException(422, "basis must be face or outstanding")
-    if kind == "shape" and basis != "face":
-        raise HTTPException(422, "Shape curves must be on the face basis")
     raw = file.file.read(20 * 1024 * 1024 + 1)
     if len(raw) > 20 * 1024 * 1024:
         raise HTTPException(413, "Curve files are limited to 20 MB")
@@ -384,9 +391,7 @@ def upload_curves(file: UploadFile = File(...), kind: str = Form("shape"), basis
         row.basis = basis
         row.source_filename = filename
         row.uploaded_by = access.user.id
-    if kind == "shape":
-        mark_stale(db, project_id=pid)        # applied curves never enter the calculation
-    db.commit()
+    db.commit()                               # applied curves never enter the calculation
     return curve_rows(db, pid)
 
 
@@ -396,7 +401,5 @@ def delete_curve(cid: int, access: Access = Depends(project_access("editor")), d
     if row is None or row.project_id != access.project.id:
         raise HTTPException(404, "Curve not found")
     db.delete(row)
-    if row.kind == "shape":
-        mark_stale(db, project_id=access.project.id)
     db.commit()
     return curve_rows(db, access.project.id)

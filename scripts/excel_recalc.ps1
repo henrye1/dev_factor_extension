@@ -43,7 +43,7 @@ try {
 
     # count error cells on the calculation sheets
     $errors = @{}
-    foreach ($name in 'Config', 'Results', 'LGD_300', 'Hazard_Obs', 'Tail_Fit', 'Ext_Exp', 'Ext_Power', 'Ext_Client', 'Raw_Index') {
+    foreach ($name in 'Config', 'Results', 'LGD_300', 'Hazard_Obs', 'Tail_Fit', 'Ext_Exp', 'Ext_Power', 'Ext_LogN', 'Raw_Index') {
         $ws = $wb.Worksheets.Item($name)
         $count = 0
         try { $count = $ws.UsedRange.SpecialCells(-4123, 16).Count } catch { $count = 0 }   # formulas that are errors
@@ -57,6 +57,9 @@ try {
         final     = Column $lgd ("J13:J{0}" -f (12 + $T))
         lam       = $cfg.Range('B25').Value2
         gam       = $cfg.Range('B26').Value2
+        mu        = $cfg.Range('B33').Value2
+        sigma     = $cfg.Range('B34').Value2
+        lgd_logn  = Column $res ("H10:H{0}" -f (9 + $N))
         avg_sel   = $res.Range('G6').Value2
         tie_max   = $res.Range('B7').Value2
         tie_min   = $res.Range('B8').Value2

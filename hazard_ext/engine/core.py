@@ -1,7 +1,7 @@
 """Hazard-rate bucket extension engine.
 
 A numpy re-statement of the formula-driven framework workbook
-(Hazard_Obs -> Tail_Fit -> Ext_Exp / Ext_Power / Ext_Ref -> Results -> LGD_300).
+(Hazard_Obs -> Tail_Fit -> Ext_Exp / Ext_Power / Ext_LogN -> Results -> LGD_300).
 All triangle arrays are 1-indexed: element [ts, b]; index 0 is unused padding.
 """
 from __future__ import annotations
@@ -12,10 +12,10 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .params import Params
-from .parse import RecoveryData
+from .parse import RecoveryData, VintageError
 
-SHAPES = ("exp", "power", "client")
-SHAPE_LABELS = {"exp": "Exponential", "power": "Power law", "client": "Reference curve shape"}
+SHAPES = ("exp", "power", "logn")
+SHAPE_LABELS = {"exp": "Exponential", "power": "Power law", "logn": "Log-normal"}
 _EPS = 1e-9   # the workbook's MAX(0.000000001, balance factor)
 
 
@@ -78,8 +78,7 @@ class ExtensionResult:
             "exposure": _clean_list(exposure),
             "exp": _clean_list(self.ext[0, ts, ts:mb + 1]),
             "power": _clean_list(self.ext[1, ts, ts:mb + 1]),
-            "client": _clean_list(self.ext[2, ts, ts:mb + 1]),
-            "client_curve": _clean_list(self.shapes[2, ts:mb + 1]),
+            "logn": _clean_list(self.ext[2, ts, ts:mb + 1]),
             "last_cred": int(self.tail_fit["last_cred"][ts - 1]),
             "last_obs": int(self.tail_fit["last_obs"][ts - 1]),
         }
@@ -93,6 +92,8 @@ def _clean(d: dict) -> dict:
             out[k] = v if math.isfinite(v) else None
         elif isinstance(v, np.integer):
             out[k] = int(v)
+        elif isinstance(v, np.bool_):
+            out[k] = bool(v)
         else:
             out[k] = v
     return out
@@ -119,6 +120,44 @@ def _slope(y: np.ndarray, x: np.ndarray) -> float:
     return float((dx * (y - y.mean())).sum() / den)
 
 
+def _logn_fit(fx: np.ndarray, fy: np.ndarray, mu_override, sigma_override) -> dict:
+    """Log-normal shape (1/b)·exp(−(ln b − μ)²/(2σ²)) fitted to the same points as λ and γ.
+
+    Taking logs, y = ln R + ln b = a0 + a1·x + a2·x² with x = ln b, an ordinary least-squares
+    fit with one more regressor than the λ / γ slope. σ² = −1/(2·a2) and μ = a1·σ², valid when
+    a2 < 0 (the tail is concave in ln b). With one parameter given, the other comes from a
+    single-regressor SLOPE on the transformed points, as in the formula workbook.
+    Returns mu_fit, sigma_fit (the full fit), mu, sigma (the values used), a2, points, problem.
+    """
+    out = {"mu_fit": float("nan"), "sigma_fit": float("nan"), "a2": float("nan"), "points": 0, "problem": ""}
+    x = np.log(fx) if fx.size else np.array([])
+    y = fy + x
+    if fx.size >= 3:
+        A = np.column_stack([np.ones_like(x), x, x * x])
+        a = np.linalg.lstsq(A, y, rcond=None)[0]
+        out["a2"] = float(a[2])
+        if a[2] < 0:
+            s2 = -1.0 / (2.0 * a[2])
+            out["mu_fit"], out["sigma_fit"], out["points"] = float(a[1] * s2), float(math.sqrt(s2)), int(fx.size)
+        else:
+            out["problem"] = "not_concave"
+    if mu_override is not None and sigma_override is not None:
+        mu, sigma = float(mu_override), float(sigma_override)
+    elif sigma_override is not None:
+        sigma = float(sigma_override)
+        mu = _slope(y + x * x / (2.0 * sigma * sigma), x) * sigma * sigma if fx.size else float("nan")
+    elif mu_override is not None:
+        mu = float(mu_override)
+        a2 = _slope(y, x * x - 2.0 * mu * x) if fx.size else float("nan")
+        sigma = math.sqrt(-1.0 / (2.0 * a2)) if math.isfinite(a2) and a2 < 0 else float("nan")
+        if math.isfinite(a2) and a2 >= 0:
+            out["problem"] = "not_concave"
+    else:
+        mu, sigma = out["mu_fit"], out["sigma_fit"]
+    out["mu"], out["sigma"] = mu, sigma
+    return out
+
+
 def _ranges(values) -> str:
     """Compact text for a sorted list of integers: 2-5, 9, 12-14."""
     vals = [int(x) for x in values]
@@ -140,27 +179,37 @@ def _last_true(mask: np.ndarray) -> np.ndarray:
     return np.where(mask, cols, 0).max(axis=1)
 
 
-def compute(data: RecoveryData, params: Params, curve: np.ndarray | None = None) -> ExtensionResult:
-    """Run the extension framework for one dataset under one parameter set.
+def _money(x: float) -> str:
+    if x >= 1e9:
+        return f"R{x / 1e9:.2f}bn"
+    if x >= 1e6:
+        return f"R{x / 1e6:.1f}m"
+    return f"R{x:,.0f}"
 
-    ``curve`` is the reference curve for shape 3 (values for t = 1, 2, ...). It may be
-    None when the selected method is 1 or 2; the reference-shape columns are then blank.
-    """
-    # A shape that cannot be computed (no curve, undefined decay) carries nan through its own
-    # columns by design; the selected shape is checked explicitly below.
+
+def compute(data: RecoveryData, params: Params) -> ExtensionResult:
+    """Run the extension framework for one dataset under one parameter set."""
+    # A shape that cannot be computed (undefined decay) carries nan through its own columns by
+    # design; the selected shape is checked explicitly below.
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
-        return _compute(data, params, curve)
+        return _compute(data, params)
 
 
-def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> ExtensionResult:
+def _compute(data: RecoveryData, params: Params) -> ExtensionResult:
     p = params
     warnings: list[str] = []
-    tri = data.triangles(p.event_type)
+    try:
+        v_start, vinfo = data.resolve_vintages(p.event_type, p.vintage_start, p.vintage_years)
+        tri = data.triangles(p.event_type, v_start)
+    except VintageError as exc:
+        raise EngineError(str(exc)) from None
     n, R, E = tri.n, tri.R, tri.E
+    filtered = bool(vinfo["vintage_filter"])
+    full = data.triangles(p.event_type) if filtered else tri
+    if filtered and not (E > 0).any():
+        raise EngineError(f"Vintages from {vinfo['vintage_start_effective']} leave no exposure in the triangle; "
+                          f"choose an earlier start")
 
-    if p.method == 3 and curve is None:
-        raise EngineError("Method 3 (reference curve shape) needs a reference curve; choose one "
-                          "for this zip or use method 1 or 2")
     if p.ref_ts > n:
         raise EngineError(f"Reference TermStep {p.ref_ts} is beyond the observed range 1..{n}")
     if p.base_ts > n:
@@ -209,9 +258,16 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
     if fx.size < 3:
         warnings.append(
             f"Only {fx.size} positive point(s) between FitStart {p.fit_start} and the reference row's "
-            f"last credible bucket {ref_last_cred}; the fitted λ and γ are unreliable")
+            f"last credible bucket {ref_last_cred}; the fitted λ, γ and the log-normal μ / σ are unreliable")
     lam = lam_fit if p.lambda_override is None else float(p.lambda_override)
     gam = gam_fit if p.gamma_override is None else float(p.gamma_override)
+    ln = _logn_fit(fx, fy, p.mu_override, p.sigma_override)
+    mu, sigma = ln["mu"], ln["sigma"]
+    if ln["problem"] == "not_concave":
+        warnings.append(
+            "The log-normal shape cannot be fitted: ln RecoveryPct + ln b is not concave in ln b over the "
+            "regression window (the quadratic coefficient is not negative), so μ and σ are undefined. "
+            "Lower FitStart, set μ and σ overrides, or use another method")
 
     # shapes by bucket 1..size-1
     bb = np.arange(size, dtype=float)
@@ -219,12 +275,11 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         shapes[0, 1:] = np.exp(-lam * bb[1:])
         shapes[1, 1:] = bb[1:] ** (-gam)
-    if curve is not None:
-        c = np.asarray(curve, dtype=float)
-        m = min(len(c), size - 1)
-        shapes[2, 1:m + 1] = c[:m]
-    else:
-        shapes[2, :] = np.nan
+        if math.isfinite(mu) and math.isfinite(sigma) and sigma > 0:
+            lb = np.log(bb[1:])
+            shapes[2, 1:] = np.exp(-((lb - mu) ** 2) / (2.0 * sigma * sigma)) / bb[1:]
+        else:
+            shapes[2, :] = np.nan
     vb = v ** bb
     vb[0] = 0.0
 
@@ -272,7 +327,7 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
 
     sel = p.method - 1
     if not np.isfinite(lgd_ext[sel, 1:]).all():
-        what = "λ" if sel == 0 else "γ" if sel == 1 else "the reference curve"
+        what = "λ" if sel == 0 else "γ" if sel == 1 else "μ / σ"
         raise EngineError(
             f"The selected method cannot be computed because {what} is undefined. "
             f"Lower FitStart, set an override, or choose another method")
@@ -296,7 +351,7 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
         "file_floor_gap": floor_gap[s_],
         "lgd_exp": lgd_ext[0, s_],
         "lgd_power": lgd_ext[1, s_],
-        "lgd_client": lgd_ext[2, s_],
+        "lgd_logn": lgd_ext[2, s_],
         "lgd_selected": lgd_ext[sel, s_],
         "pv_original": pv_orig[s_],
         "pv_selected": pv_sel[s_],
@@ -327,7 +382,7 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
         "lgd_replica": wavg(lgd_obs[s_]),
         "lgd_exp": wavg_strict(lgd_ext[0, s_]),
         "lgd_power": wavg_strict(lgd_ext[1, s_]),
-        "lgd_client": wavg_strict(lgd_ext[2, s_]),
+        "lgd_logn": wavg_strict(lgd_ext[2, s_]),
         "lgd_selected": wavg(lgd_ext[sel, s_]),
         "uplift": wavg(uplift[s_]),
         "uplift_simple": float(uplift[s_].mean()),
@@ -335,21 +390,29 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
         "tie_min": float(tie_valid.min()) if tie_valid.size else float("nan"),
     }
     tie_abs = max(abs(averages["tie_max"]), abs(averages["tie_min"])) if tie_valid.size else 0.0
+    source = "the rebuilt vintage subset" if filtered else "the file"
     if tie_abs > 1e-6:
         warnings.append(
-            f"Tie-out is {tie_abs:.6f}: the replica does not reproduce the file's LGD. "
+            f"Tie-out is {tie_abs:.6f}: the replica does not reproduce {source}'s LGD. "
             f"The discount rate used ({rate:.4%}) differs from the rate implied by the file "
             f"({tri.implied_rate:.4%})" if abs(rate - tri.implied_rate) > 1e-9 else
-            f"Tie-out is {tie_abs:.6f}: the replica does not reproduce the file's LGD")
+            f"Tie-out is {tie_abs:.6f}: the replica does not reproduce {source}'s LGD")
 
     floored = np.nonzero(np.nan_to_num(floor_gap[s_]) > 1e-12)[0] + 1
     averages["file_floored_count"] = int(floored.size)
     if floored.size:
-        warnings.append(
-            f"The file's LGD is floored at the previous TermStep's LGD for {floored.size} TermStep(s) "
-            f"({_ranges(floored)}); the largest gap is {float(np.nanmax(floor_gap[s_])):.6f}. "
-            f"'Original LGD' shows the file value; the tie-out is measured on 1 − CumulativeSumPV, "
-            f"and the extended LGD is not floored")
+        if filtered:
+            warnings.append(
+                f"The LGD of the vintage subset is floored at the previous TermStep's LGD, as the risk suite "
+                f"does, for {floored.size} TermStep(s) ({_ranges(floored)}); the largest gap is "
+                f"{float(np.nanmax(floor_gap[s_])):.6f}. The tie-out is measured on 1 − CumulativeSumPV, "
+                f"and the extended LGD is not floored")
+        else:
+            warnings.append(
+                f"The file's LGD is floored at the previous TermStep's LGD for {floored.size} TermStep(s) "
+                f"({_ranges(floored)}); the largest gap is {float(np.nanmax(floor_gap[s_])):.6f}. "
+                f"'Original LGD' shows the file value; the tie-out is measured on 1 − CumulativeSumPV, "
+                f"and the extended LGD is not floored")
 
     tail_fit = {
         "ts": ts_idx[s_],
@@ -361,7 +424,7 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
         "sum_obs": sum_obs[s_],
         "scale_exp": scale[0, s_],
         "scale_power": scale[1, s_],
-        "scale_client": scale[2, s_] if curve is not None else np.full(n, np.nan),
+        "scale_logn": scale[2, s_],
     }
 
     # ------------------------------------------------ LGD to the Target TermStep
@@ -417,7 +480,7 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
         "balance_factor": factor[sel],
         "derived_exp": derived[0],
         "derived_power": derived[1],
-        "derived_client": derived[2],
+        "derived_logn": derived[2],
         "derived_selected": derived[sel],
         "lgd_final": np.where(is_own, own, derived[sel]),
         "validation": own - derived[sel],
@@ -436,13 +499,19 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
     }
 
     # ---------------------------------------------------------------- warnings
-    if curve is not None:
-        nz = np.nonzero(np.asarray(curve) > 0)[0]
-        curve_end = int(nz[-1] + 1) if nz.size else 0
-        if p.method == 3 and mb > curve_end:
+    if filtered:
+        warnings.insert(0,
+            f"Vintages from {vinfo['vintage_start_effective']}: {vinfo['cohorts_included']} of "
+            f"{vinfo['cohorts_total']} cohorts, {vinfo['exposure_share']:.0%} of the at-default exposure. "
+            f"The last observed bucket is {tri.last_obs_file} against {full.last_obs_file} with all vintages, "
+            f"and the opening exposure {_money(opening)} against {_money(float(full.E[1, 1]))}, so a "
+            f"percentage MinExposure is relative to the subset")
+        if p.min_exposure_mode == "abs" and int(n_win[p.ref_ts]) < p.window:
             warnings.append(
-                f"MaxBucket {mb} is beyond the end of the reference curve (t = {curve_end}); "
-                f"shape 3 adds no recoveries after that bucket")
+                f"With vintages from {vinfo['vintage_start_effective']} only {int(n_win[p.ref_ts])} credible "
+                f"bucket(s) remain on the reference row against a window of {p.window}: the Rand MinExposure "
+                f"of {_money(float(min_exp))} cuts credibility early on the smaller book. Consider stating "
+                f"MinExposure as a percentage of the opening exposure")
     if mb < tri.last_obs_file:
         warnings.append(
             f"MaxBucket {mb} is below the last observed bucket {tri.last_obs_file}; observed "
@@ -468,7 +537,7 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
         warnings.append(
             f"LastTS {last_ts} is beyond the last observed TermStep with data ({last_data_ts})")
 
-    cohort = p.client_cohort or data.category
+    logn_ok = math.isfinite(mu) and math.isfinite(sigma)
     config = {
         "event_type": p.event_type,
         "category": data.category,
@@ -484,14 +553,30 @@ def _compute(data: RecoveryData, params: Params, curve: np.ndarray | None) -> Ex
         "gam_fit": gam_fit,
         "lam": lam,
         "gam": gam,
+        "mu_fit": ln["mu_fit"],
+        "sigma_fit": ln["sigma_fit"],
+        "mu": mu,
+        "sigma": sigma,
+        "logn_mode": math.exp(mu - sigma * sigma) if logn_ok else float("nan"),
+        "logn_median": math.exp(mu) if logn_ok else float("nan"),
+        "logn_points": int(ln["points"]),
         "ref_last_cred": ref_last_cred,
         "fit_points": int(fx.size),
         "half_life": math.log(2.0) / lam if lam and math.isfinite(lam) and lam != 0 else float("nan"),
         "last_ts": last_ts,
         "last_data_ts": last_data_ts,
-        "client_cohort": cohort if curve is not None else None,
         "method": p.method,
         "method_label": SHAPE_LABELS[SHAPES[sel]],
+        "vintage_filter": filtered,
+        "vintage_start_effective": vinfo["vintage_start_effective"],
+        "vintage_first": vinfo["vintage_first"],
+        "vintage_last": vinfo["vintage_last"],
+        "cohorts_included": vinfo["cohorts_included"],
+        "cohorts_total": vinfo["cohorts_total"],
+        "exposure_share": vinfo["exposure_share"],
+        "last_obs_unfiltered": full.last_obs_file,
+        "lgd_file_label": (f"LGD (vintages from {vinfo['vintage_start_effective']})" if filtered
+                           else "Original LGD (file)"),
     }
 
     return ExtensionResult(

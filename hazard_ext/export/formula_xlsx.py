@@ -2,8 +2,11 @@
 
 Same sheets, defined names and formulas as the hand-built framework workbooks
 (README, Config, Results, LGD_300, Charts, Hazard_Obs, Tail_Fit, Ext_Exp, Ext_Power,
-Ext_Ref, Ref_Curve, Raw_Debug), generalised to the zip's own number of TermSteps,
-the scenario's MaxBucket and its Target TermStep.
+Ext_LogN, Raw_Debug), generalised to the zip's own number of TermSteps, the scenario's
+MaxBucket and its Target TermStep. The log-normal shape is fitted on Tail_Fit with SLOPE and
+INTERCEPT helper rows (the two-stage form of the quadratic least-squares fit), so no array
+formulas are needed. With a vintage filter, Raw_Debug holds the rows rebuilt from
+runoff_triangle.csv for the chosen vintages instead of the file's rows.
 
 Two deliberate differences from the hand-built workbooks:
 
@@ -26,9 +29,12 @@ import numpy as np
 import xlsxwriter
 from xlsxwriter.utility import xl_col_to_name as CN
 
-from ..engine.core import ExtensionResult, compute
+from ..engine.core import ExtensionResult
 from ..engine.params import Params
-from ..engine.parse import COLUMNS, NUM_COLUMNS, RecoveryData
+from ..engine.parse import COLUMNS, RecoveryData, month_int
+from .summary_xlsx import vintage_text
+
+TR = 19                       # Tail_Fit: the per-TermStep table starts on row TR + 1 (header on row TR)
 
 NAVY = "#1F3A5F"
 _EPS_TXT = "0.000000001"
@@ -45,23 +51,50 @@ def _v(x):
     return x
 
 
-def _label_value(label: str):
-    """Curve labels made of digits are written as numbers, as in the hand-built workbooks."""
-    return int(label) if label.isdigit() else label
+def _logn_helper_rows(res: ExtensionResult, p: Params, n: int, wd: int) -> dict[int, np.ndarray]:
+    """Cached values of the Tail_Fit helper rows 12-17 (the log-normal fit), by row number."""
+    ref_row = res.R[p.ref_ts]
+    b = np.arange(1, wd + 1, dtype=float)
+    r = np.full(wd, np.nan)
+    r[:n] = ref_row[1:n + 1]
+    x = np.log(b)
+    ok = r > 0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        y = np.where(ok, np.log(np.where(ok, r, 1.0)) + x, np.nan)
+    x2 = np.where(ok, x * x, np.nan)
+    lo, hi = sorted((int(p.fit_start), int(res.config["ref_last_cred"])))
+    lo, hi = max(lo, 1), min(hi, wd)
+    win = np.zeros(wd, dtype=bool)
+    if hi >= lo:
+        win[lo - 1:hi] = True
+    sel = win & ok
+
+    def fit(yv, xv):
+        if sel.sum() < 2:
+            return float("nan"), float("nan")
+        xs, ys = xv[sel], yv[sel]
+        dx = xs - xs.mean()
+        den = float((dx * dx).sum())
+        slope = float((dx * (ys - ys.mean())).sum() / den) if den else float("nan")
+        return slope, float(ys.mean() - slope * xs.mean())
+
+    sy, iy = fit(y, x)
+    sx2, ix2 = fit(x2, x)
+    ry = np.where(ok, y - (iy + sy * x), np.nan)
+    rx2 = np.where(ok, x2 - (ix2 + sx2 * x), np.nan)
+    s16 = np.where(ok, y + x2 / (2.0 * p.sigma_override ** 2), np.nan) if p.sigma_override is not None else np.full(wd, np.nan)
+    s17 = np.where(ok, x2 - 2.0 * p.mu_override * x, np.nan) if p.mu_override is not None else np.full(wd, np.nan)
+    return {12: y, 13: x2, 14: ry, 15: rx2, 16: s16, 17: s17}
 
 
 def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_name: str,
-                           scenario_name: str, curves: dict[str, np.ndarray]) -> bytes:
+                           scenario_name: str) -> bytes:
     p = Params(**res.params)
     if not data.is_contiguous(p.event_type):
         raise ValueError("The formula workbook needs each TermStep's buckets in ascending order "
                          "without gaps; this zip does not have that layout. Use the values export")
-    if res.config["client_cohort"] is None:
-        # No reference curve: the workbook's shape 3 is zero, so cache what its formulas will give.
-        res = compute(data, p, np.zeros(1))
-        cohort_cell = ""
-    else:
-        cohort_cell = _label_value(str(res.config["client_cohort"]))
+    filtered = bool(res.config.get("vintage_filter"))
+    v_start = month_int(res.config["vintage_start_effective"]) if filtered else None
 
     n = res.n
     wd = int(res.shape_stats["tri_width"])          # bucket columns in the extended triangles
@@ -69,7 +102,10 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
     cfg, st = res.config, res.shape_stats
 
     # ---- Raw_Debug rows -------------------------------------------------------------------
-    if data.identical_events:
+    if filtered:
+        # the rows rebuilt from runoff_triangle.csv for the chosen vintages (one EventType)
+        blocks = [(p.event_type, data.rebuilt_block(p.event_type, v_start))]
+    elif data.identical_events:
         blocks = [(p.event_type, data.block(p.event_type))]
     else:
         blocks = [(ev, data.block(ev)) for ev in data.event_types]
@@ -102,13 +138,9 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
     PH, PI, PJ, PK, PL, PM, PN, PO = (CN(wd + 3 + i) for i in range(8))
     res_last = 9 + n
     ext_last = 5 + n
-    tail_last = 14 + n
+    tail_last = TR + n
     lgd_last = 12 + T
-
-    labels = sorted(curves)
-    curve_len = max((len(curves[k]) for k in labels), default=1)
-    cc_last_row = 3 + curve_len
-    cc_last_col = CN(max(len(labels), 1))
+    helper = _logn_helper_rows(res, p, n, wd)
 
     fd, path = tempfile.mkstemp(suffix=".xlsx")
     os.close(fd)
@@ -145,17 +177,18 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
         ws_ch = wb.add_worksheet("Charts")
         ws_obs = wb.add_worksheet("Hazard_Obs")
         ws_tail = wb.add_worksheet("Tail_Fit")
-        ws_ext = [wb.add_worksheet(nm) for nm in ("Ext_Exp", "Ext_Power", "Ext_Ref")]
-        ws_cc = wb.add_worksheet("Ref_Curve")
+        ws_ext = [wb.add_worksheet(nm) for nm in ("Ext_Exp", "Ext_Power", "Ext_LogN")]
         ws_idx = wb.add_worksheet("Raw_Index")
         ws_raw = wb.add_worksheet("Raw_Debug")
 
         for name, ref in {
             "EventType": "$B$4", "Rate": "$B$5", "MaxBucket": "$B$6", "MinExp": "$B$7",
             "WinW": "$B$8", "FitStart": "$B$9", "RefTS": "$B$10", "Method": "$B$11",
-            "RefCurve": "$B$12", "Horizon": "$B$13", "LamOvr": "$B$14", "GamOvr": "$B$15",
+            "MuOvr": "$B$12", "Horizon": "$B$13", "LamOvr": "$B$14", "GamOvr": "$B$15",
             "Floor": "$B$16", "BaseTS": "$B$17", "Horizon2": "$B$18", "LastTS": "$B$19",
+            "SigOvr": "$B$20",
             "v": "$B$22", "Lam": "$B$27", "Gam": "$B$28", "RefLastCred": "$B$29",
+            "Mu": "$B$33", "Sig": "$B$34",
         }.items():
             wb.define_name(name, f"=Config!{ref}")
 
@@ -189,10 +222,10 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
              "Start of the regression window for λ / γ on the reference row (end = that row's last credible bucket)."),
             ("Reference TermStep for λ / γ", p.ref_ts, "input",
              "Row whose observed tail is used to fit the decay parameters (1 = longest, best populated)."),
-            ("Method (1 = exponential, 2 = power law, 3 = reference curve shape)", p.method, "input",
+            ("Method (1 = exponential, 2 = power law, 3 = log-normal)", p.method, "input",
              'Selected extension used in the "Selected" columns. All three are always computed.'),
-            ("Reference curve", cohort_cell, "input",
-             "Column of Ref_Curve used for shape 3 and the comparison chart. Must equal a header on that sheet."),
+            ("Log-normal μ override (blank = fitted)", "" if p.mu_override is None else p.mu_override, "input",
+             "Location of the log-normal shape on ln b. Fitted value shown in B31; with σ given, μ comes from a single SLOPE (B33)."),
             ("Horizon (months) for the short LGD", p.horizon, "input",
              "Results also show LGD over this horizon only."),
             ("λ override (blank = fitted)", "" if p.lambda_override is None else p.lambda_override, "input",
@@ -206,8 +239,8 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
              "LGD_300 also shows LGD over this horizon only."),
             ("Last observed TermStep to use as-is", cfg["last_ts"], "input",
              "TermSteps up to this come from their own observed+extended row; beyond it from the base-row derivation."),
-            ("Target TermStep (rows built on LGD_300)", T, None,
-             "Fixed when the workbook is built. Run the scenario with another Target TermStep to change it."),
+            ("Log-normal σ override (blank = fitted)", "" if p.sigma_override is None else p.sigma_override, "input",
+             "Spread of the log-normal shape on ln b. Fitted value shown in B32; with μ given, σ comes from a single SLOPE (B34)."),
         ]
         for i, (label, value, fmt, note) in enumerate(rows):
             w.write(3 + i, 0, label)
@@ -222,6 +255,12 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
         tail5 = f"Tail_Fit!$C$5:${wc}$5"
         tail10 = f"Tail_Fit!$C$10:${wc}$10"
         tail11 = f"Tail_Fit!$C$11:${wc}$11"
+
+        def fit_rng(row):                      # the regression window on one Tail_Fit row
+            rng_ = f"Tail_Fit!$C${row}:${wc}${row}"
+            return f"INDEX({rng_},FitStart):INDEX({rng_},RefLastCred)"
+
+        xr, yr, x2r, ryr, rx2r, s16r, s17r = (fit_rng(r_) for r_ in (11, 12, 13, 14, 15, 16, 17))
         derived = [
             ("Monthly discount factor v = (1+r)^(−1/12)", "=(1+Rate)^(-1/12)", cfg["v"]),
             ("Last observed bucket in file (max BucketIndex with exposure > 0)",
@@ -236,12 +275,42 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
              cfg["gam_fit"]),
             ("λ used", '=IF(LamOvr="",B25,LamOvr)', cfg["lam"]),
             ("γ used", '=IF(GamOvr="",B26,GamOvr)', cfg["gam"]),
-            ("Reference row last credible bucket", f"=INDEX(Tail_Fit!$C$15:$C${tail_last},RefTS)", cfg["ref_last_cred"]),
+            ("Reference row last credible bucket", f"=INDEX(Tail_Fit!$C${TR + 1}:$C${tail_last},RefTS)", cfg["ref_last_cred"]),
             ("Half-life of the exponential tail (buckets)", "=LN(2)/Lam", cfg["half_life"]),
+            ("Log-normal μ fitted (ref row, ln R + ln b on ln b and ln b²)",
+             f"=IF(B35<0,(SLOPE({yr},{xr})-B35*SLOPE({x2r},{xr}))*B32^2,NA())", cfg["mu_fit"]),
+            ("Log-normal σ fitted", "=IF(B35<0,SQRT(-1/(2*B35)),NA())", cfg["sigma_fit"]),
+            ("Log-normal μ used",
+             f'=IF(MuOvr<>"",MuOvr,IF(SigOvr<>"",SLOPE({s16r},{xr})*SigOvr^2,B31))', cfg["mu"]),
+            ("Log-normal σ used",
+             f'=IF(SigOvr<>"",SigOvr,IF(MuOvr<>"",IFERROR(SQRT(-1/(2*SLOPE({yr},{s17r}))),NA()),B32))', cfg["sigma"]),
+            ("Log-normal quadratic coefficient a2 (must be < 0)", f"=IFERROR(SLOPE({ryr},{rx2r}),NA())",
+             _logn_a2(res)),
+            ("Log-normal mode (bucket of peak recovery) = exp(μ − σ²)", "=EXP(Mu-Sig^2)", cfg["logn_mode"]),
+            ("Log-normal median (bucket) = exp(μ)", "=EXP(Mu)", cfg["logn_median"]),
         ]
         for i, (label, formula, value) in enumerate(derived):
             w.write(21 + i, 0, label)
             w.write_formula(21 + i, 1, formula, f["num"] if i not in (1, 7) else None, _v(value))
+        info = [
+            ("Target TermStep (rows built on LGD_300)", T,
+             "Fixed when the workbook is built. Run the scenario with another Target TermStep to change it."),
+            ("Vintages", vintage_text(cfg),
+             "Fixed when the workbook is built. " + (
+                 f"Raw_Debug holds rows rebuilt from runoff_triangle.csv for vintages from "
+                 f"{cfg['vintage_start_effective']} ({cfg['cohorts_included']} of {cfg['cohorts_total']} cohorts); "
+                 f"the file's last observed bucket with all vintages is {cfg['last_obs_unfiltered']}."
+                 if filtered else "Raw_Debug holds the file's rows over all default vintages.")),
+            ("Vintage parameters (start month / last N years)",
+             f"{p.vintage_start or ''} / {p.vintage_years or ''}".strip(" /") or "none", ""),
+        ]
+        for i, (label, value, note) in enumerate(info):
+            w.write(21 + len(derived) + i, 0, label)
+            if isinstance(value, str):
+                w.write_string(21 + len(derived) + i, 1, value)
+            else:
+                w.write_number(21 + len(derived) + i, 1, value)
+            w.write(21 + len(derived) + i, 2, note)
 
         # ============================================================== Results
         w = ws_res
@@ -255,10 +324,10 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
                       "at (ts, ts) – the balance of the accounts valued at that TermStep.", f["note"])
         w.write(3, 0, "Exposure-weighted average over all TermSteps", f["bold"])
         w.write_row(4, 0, ["(weighted by Exposure at ts)", "Original LGD", "Replica LGD", "LGD exponential",
-                           "LGD power", "LGD reference curve shape", "LGD SELECTED", "Uplift"], f["bold"])
+                           "LGD power", "LGD log-normal", "LGD SELECTED", "Uplift"], f["bold"])
         rng = lambda col: f"{col}$10:{col}${res_last}"
         for c, (col, key) in enumerate([("C", "lgd_file"), ("D", "lgd_replica"), ("F", "lgd_exp"), ("G", "lgd_power"),
-                                        ("H", "lgd_client"), ("I", "lgd_selected"), ("L", "uplift")], start=1):
+                                        ("H", "lgd_logn"), ("I", "lgd_selected"), ("L", "uplift")], start=1):
             w.write_formula(5, c, f"=SUMPRODUCT($B$10:$B${res_last},{rng(col)})/SUM($B$10:$B${res_last})",
                             f["lgd_b"], _v(avg[key]))
         w.write(6, 0, "Tie-out range (max / min)")
@@ -266,8 +335,8 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
         w.write(6, 2, "Simple average uplift")
         w.write_formula(6, 3, f"=AVERAGE(L10:L{res_last})", f["lgd"], _v(avg["uplift_simple"]))
         w.write_formula(7, 1, f"=MIN(E10:E{res_last})", f["sci"], _v(avg["tie_min"]))
-        heads = ["TermStep", "Exposure at ts (R)", "Original LGD (file)", "Replica LGD (observed only)",
-                 "Tie-out (D − R)", "LGD – exponential", "LGD – power", "LGD – reference curve shape",
+        heads = ["TermStep", "Exposure at ts (R)", cfg["lgd_file_label"], "Replica LGD (observed only)",
+                 "Tie-out (D − R)", "LGD – exponential", "LGD – power", "LGD – log-normal",
                  "LGD – SELECTED (Config Method)", "Original PV recoveries", "Selected PV recoveries",
                  "Uplift in recoveries (K − J)", "LGD within Horizon – selected",
                  "Undiscounted recoveries – observed", "Undiscounted recoveries – selected",
@@ -290,19 +359,19 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
             w.write_formula(row0, 4, f'=IF(R{r}="","",D{r}-R{r})', f["sci"], _v(R["tie_out"][i]))
             w.write_formula(row0, 5, f"=INDEX({ext_rng('Ext_Exp', PI)},A{r})", f["lgd"], _v(R["lgd_exp"][i]))
             w.write_formula(row0, 6, f"=INDEX({ext_rng('Ext_Power', PI)},A{r})", f["lgd"], _v(R["lgd_power"][i]))
-            w.write_formula(row0, 7, f"=INDEX({ext_rng('Ext_Ref', PI)},A{r})", f["lgd"], _v(R["lgd_client"][i]))
+            w.write_formula(row0, 7, f"=INDEX({ext_rng('Ext_LogN', PI)},A{r})", f["lgd"], _v(R["lgd_logn"][i]))
             w.write_formula(row0, 8, f"=CHOOSE(Method,F{r},G{r},H{r})", f["lgd_b"], _v(R["lgd_selected"][i]))
             w.write_formula(row0, 9, f"=1-D{r}", f["lgd"], _v(R["pv_original"][i]))
             w.write_formula(row0, 10, f"=1-I{r}", f["lgd"], _v(R["pv_selected"][i]))
             w.write_formula(row0, 11, f"=K{r}-J{r}", f["lgd"], _v(R["uplift"][i]))
             w.write_formula(row0, 12,
                             f"=CHOOSE(Method,INDEX({ext_rng('Ext_Exp', PM)},A{r}),INDEX({ext_rng('Ext_Power', PM)},A{r}),"
-                            f"INDEX({ext_rng('Ext_Ref', PM)},A{r}))", f["lgd"], _v(R["lgd_horizon"][i]))
+                            f"INDEX({ext_rng('Ext_LogN', PM)},A{r}))", f["lgd"], _v(R["lgd_horizon"][i]))
             w.write_formula(row0, 13, f"=INDEX({ext_rng('Ext_Exp', PO)},A{r})", f["lgd"], _v(R["undisc_observed"][i]))
             w.write_formula(row0, 14,
                             f"=CHOOSE(Method,INDEX({ext_rng('Ext_Exp', PN)},A{r}),INDEX({ext_rng('Ext_Power', PN)},A{r}),"
-                            f"INDEX({ext_rng('Ext_Ref', PN)},A{r}))", f["lgd"], _v(R["undisc_selected"][i]))
-            w.write_formula(row0, 15, f"=Tail_Fit!$C${14 + ts}", None, _v(R["last_cred"][i]))
+                            f"INDEX({ext_rng('Ext_LogN', PN)},A{r}))", f["lgd"], _v(R["undisc_selected"][i]))
+            w.write_formula(row0, 15, f"=Tail_Fit!$C${TR + ts}", None, _v(R["last_cred"][i]))
             w.write_formula(row0, 16, f"=MaxBucket-MAX(P{r},A{r}-1)", None, _v(R["buckets_added"][i]))
             w.write_formula(row0, 17, f'=IF({guard},"",1-INDEX({RD("L")},{pos}))', f["lgd"], _v(lgd_unfloored[i]))
             w.write_formula(row0, 18, f'=IF(C{r}="","",C{r}-R{r})', f["num"], _v(R["file_floor_gap"][i]))
@@ -324,7 +393,7 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
         w.write(3, 0, "Bucket b", f["bold"])
         w.write_row(3, 3, list(range(1, wd + 1)), f["bold"])
         for k, (label, sheet) in enumerate([("c(b) – exponential", "Ext_Exp"), ("c(b) – power", "Ext_Power"),
-                                            ("c(b) – reference curve shape", "Ext_Ref")]):
+                                            ("c(b) – log-normal", "Ext_LogN")]):
             w.write(4 + k, 0, label)
             for b in range(1, wd + 1):
                 w.write_formula(4 + k, b + 2, f"=INDEX({sheet}!$C$6:${wc}${ext_last},BaseTS,{lc(b)}$4)",
@@ -339,9 +408,9 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
         w.write_formula(10, 1, f"=E{lgd_last}", f["lgd"], _v(res.lgd_ts_summary["balance_factor_target"]))
         w.set_row(11, 62)
         w.write_row(11, 0, [
-            "TermStep", "Exposure at ts (R) – observed rows", f"Original LGD (file, ts ≤ {n})",
+            "TermStep", "Exposure at ts (R) – observed rows", f"{cfg['lgd_file_label']} (ts ≤ {n})",
             "Own-row LGD – selected method (ts ≤ LastTS)", "Balance factor at ts (1 − Σ c, base row, selected)",
-            "Derived LGD – exponential", "Derived LGD – power", "Derived LGD – reference curve shape",
+            "Derived LGD – exponential", "Derived LGD – power", "Derived LGD – log-normal",
             "Derived LGD – selected", "LGD FINAL (own row to LastTS, derived beyond)",
             "Validation: own-row − derived (ts ≤ LastTS)",
             "LGD within valuation horizon (Config Horizon2) – derived basis",
@@ -366,7 +435,7 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
             w.write_formula(row0, 3, f'=IF(OR({A}>LastTS,{A}>{n}),"",INDEX(Results!$I$10:$I${res_last},{A}))',
                             f["lgd"], _v(L["lgd_own"][i]))
             w.write_formula(row0, 4, "=" + choose(pre), f["lgd"], _v(L["balance_factor"][i]))
-            for k, key in enumerate(("derived_exp", "derived_power", "derived_client")):
+            for k, key in enumerate(("derived_exp", "derived_power", "derived_logn")):
                 w.write_formula(row0, 5 + k, "=" + pv(k, "MaxBucket"), f["lgd"], _v(L[key][i]))
             w.write_formula(row0, 8, f"=CHOOSE(Method,F{r},G{r},H{r})", f["lgd"], _v(L["derived_selected"][i]))
             w.write_formula(row0, 9, f'=IF(D{r}="",I{r},D{r})', f["lgd_b"], _v(L["lgd_final"][i]))
@@ -414,20 +483,21 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
         w.set_column(1, 11, 14)
         w.write(0, 0, "Tail shapes and per-TermStep anchoring", f["title"])
         w.write(1, 0, "Rows 5–11: bucket index, the three shapes, v^b, and the reference row's ln(RecoveryPct) / ln(b) "
-                      "used to fit λ and γ. Rows 15..: per TermStep – last observed and last credible bucket, anchor "
+                      "used to fit λ and γ. Rows 12–17: the log-normal fit (y = ln R + ln b on x = ln b and x²) as "
+                      "single-regressor steps: y, x², the residuals of y and x² on x (their SLOPE is the quadratic "
+                      "coefficient), and the transformed y / x used when σ or μ is given on Config. "
+                      f"Rows {TR + 1}..: per TermStep – last observed and last credible bucket, anchor "
                       "window, and the scale for each shape (Σ observed over window ÷ Σ shape over window).", f["note"])
         w.write(4, 0, "Bucket b", f["bold"])
         w.write_row(4, 2, list(range(1, wd + 1)), f["bold"])
-        cc_tab = f"Ref_Curve!$B$4:${cc_last_col}${cc_last_row}"
-        cc_t = f"Ref_Curve!$A$4:$A${cc_last_row}"
-        cc_h = f"Ref_Curve!$B$3:${cc_last_col}$3"
         obs_tab = f"Hazard_Obs!$C$6:${nc}${5 + n}"
+        xw, yw, x2w = fit_rng(11), fit_rng(12), fit_rng(13)
         ref_row = res.R[p.ref_ts]
         shape_rows = [
             ("Shape 1: exponential e^(−λb)", lambda c, b: f"=EXP(-Lam*{c}$5)", lambda b: res.shapes[0, b], f["sci"]),
             ("Shape 2: power b^(−γ)", lambda c, b: f"={c}$5^(-Gam)", lambda b: res.shapes[1, b], f["sci"]),
-            ("Shape 3: reference curve (chosen on Config)",
-             lambda c, b: f"=IFERROR(INDEX({cc_tab},MATCH({c}$5,{cc_t},0),MATCH(RefCurve,{cc_h},0)),0)",
+            ("Shape 3: log-normal exp(−(ln b − μ)² / (2σ²)) / b",
+             lambda c, b: f"=EXP(-((LN({c}$5)-Mu)^2)/(2*Sig^2))/{c}$5",
              lambda b: res.shapes[2, b], f["sci"]),
             ("v^b (discount)", lambda c, b: f"=v^{c}$5", lambda b: res.vb[b], None),
             ("ln RecoveryPct – reference row",
@@ -435,6 +505,22 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
                            if b <= n else None),
              lambda b: math.log(ref_row[b]) if b <= n and ref_row[b] > 0 else "", None),
             ("ln b", lambda c, b: f"=LN({c}$5)", lambda b: math.log(b), None),
+            ("y = ln R + ln b (log-normal fit)", lambda c, b: f'=IF(ISNUMBER({c}$10),{c}$10+{c}$11,"")',
+             lambda b: helper[12][b - 1], None),
+            ("x² = (ln b)² where y exists", lambda c, b: f'=IF(ISNUMBER({c}$10),{c}$11^2,"")',
+             lambda b: helper[13][b - 1], None),
+            ("residual of y on x over the fit window",
+             lambda c, b: f'=IF(ISNUMBER({c}$12),{c}$12-(INTERCEPT({yw},{xw})+SLOPE({yw},{xw})*{c}$11),"")',
+             lambda b: helper[14][b - 1], None),
+            ("residual of x² on x over the fit window",
+             lambda c, b: f'=IF(ISNUMBER({c}$13),{c}$13-(INTERCEPT({x2w},{xw})+SLOPE({x2w},{xw})*{c}$11),"")',
+             lambda b: helper[15][b - 1], None),
+            ("y + x² / (2σ²) when σ is given (μ = SLOPE on x × σ²)",
+             lambda c, b: f'=IF(OR(SigOvr="",NOT(ISNUMBER({c}$12))),"",{c}$12+{c}$13/(2*SigOvr^2))',
+             lambda b: helper[16][b - 1], None),
+            ("x² − 2μx when μ is given (a2 = SLOPE of y on this)",
+             lambda c, b: f'=IF(OR(MuOvr="",NOT(ISNUMBER({c}$12))),"",{c}$13-2*MuOvr*{c}$11)',
+             lambda b: helper[17][b - 1], None),
         ]
         for k, (label, formula, value, fmt) in enumerate(shape_rows):
             w.write(5 + k, 0, label)
@@ -442,15 +528,15 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
                 fm = formula(bc(b), b)
                 if fm is not None:
                     w.write_formula(5 + k, b + 1, fm, fmt, _v(value(b)))
-        w.set_row(13, 62)
-        w.write_row(13, 0, ["TermStep", "Last observed bucket",
+        w.set_row(TR - 1, 62)
+        w.write_row(TR - 1, 0, ["TermStep", "Last observed bucket",
                             "Last credible bucket (ExposureBucket ≥ MinExposure; falls back to last observed if none)",
                             "Window start", "Window end", "Buckets in window", "Σ observed over window",
-                            "Scale – exponential", "Scale – power", "Scale – reference curve",
+                            "Scale – exponential", "Scale – power", "Scale – log-normal",
                             "Shape 1 value at window end", "Shape 3 value at window end"], f["head"])
         hb = f"Hazard_Obs!$C$5:${nc}$5"
         for ts in range(1, n + 1):
-            r, i, row0 = 14 + ts, ts - 1, 13 + ts
+            r, i, row0 = TR + ts, ts - 1, TR - 1 + ts
             er = f"Hazard_Obs!$C${e_hdr + ts}:${nc}${e_hdr + ts}"
             rr = f"Hazard_Obs!$C${5 + ts}:${nc}${5 + ts}"
             win = f"({hb}>=D{r})*({hb}<=E{r})"
@@ -463,7 +549,7 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
             w.write_formula(row0, 4, f"=C{r}", None, _v(T_["win_end"][i]))
             w.write_formula(row0, 5, f"=IF(C{r}<A{r},0,E{r}-D{r}+1)", None, _v(T_["n_win"][i]))
             w.write_formula(row0, 6, f"=IF(F{r}=0,0,SUMPRODUCT({win}*{rr}))", f["num"], _v(T_["sum_obs"][i]))
-            for k, key in enumerate(("scale_exp", "scale_power", "scale_client")):
+            for k, key in enumerate(("scale_exp", "scale_power", "scale_logn")):
                 w.write_formula(row0, 7 + k,
                                 f"=IF(F{r}=0,0,IFERROR(G{r}/SUMPRODUCT({win}*$C${6 + k}:${nc}${6 + k}),0))",
                                 f["num"], _v(T_[key][i]))
@@ -471,12 +557,12 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
                             _v(res.shapes[0, lc_]) if lc_ >= 1 else "")
             w.write_formula(row0, 11, f'=IF(C{r}<1,"",INDEX($C$8:${wc}$8,C{r}))', f["sci"],
                             _v(res.shapes[2, lc_]) if lc_ >= 1 else "")
-        w.freeze_panes(14, 1)
+        w.freeze_panes(TR, 1)
 
         # ================================================================ Ext_*
         titles = ["Extended triangle – Shape 1: exponential decay",
                   "Extended triangle – Shape 2: power law",
-                  "Extended triangle – Shape 3: reference curve shape"]
+                  "Extended triangle – Shape 3: log-normal"]
         scale_col = ["H", "I", "J"]
         b5 = f"$C$5:${wc}$5"
         vrow = f"Tail_Fit!$C$9:${wc}$9"
@@ -501,8 +587,8 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
             for ts in range(1, n + 1):
                 r, row0 = 5 + ts, 4 + ts
                 w.write_number(row0, 0, ts)
-                w.write_formula(row0, 1, f"=Tail_Fit!$C${14 + ts}", None, int(res.tail_fit["last_cred"][ts - 1]))
-                sc = f"Tail_Fit!${scale_col[k]}${14 + ts}"
+                w.write_formula(row0, 1, f"=Tail_Fit!$C${TR + ts}", None, int(res.tail_fit["last_cred"][ts - 1]))
+                sc = f"Tail_Fit!${scale_col[k]}${TR + ts}"
                 vals = ext[ts]
                 for b in range(1, wd + 1):
                     c = bc(b)
@@ -529,24 +615,6 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
                 w.write_formula(row0, c0 + 7, f"=SUM({obs_r})", f["lgd"], _v(st["und_obs"][ts]))
             w.freeze_panes(5, 2)
 
-        # ============================================================ Ref_Curve
-        w = ws_cc
-        w.set_column(0, len(labels), 14)
-        w.write(0, 0, "Reference curves – monthly recovery as % of the balance at default by month t. Shape 3 and the comparison chart "
-                      "use the cohort chosen on Config.", f["note"])
-        w.write(2, 0, "t", f["bold"])
-        for j, label in enumerate(labels):
-            lv = _label_value(label)
-            if isinstance(lv, int):
-                w.write_number(2, 1 + j, lv, f["bold"])
-            else:
-                w.write_string(2, 1 + j, lv, f["bold"])
-        for t in range(1, curve_len + 1):
-            w.write_number(2 + t, 0, t)
-            for j, label in enumerate(labels):
-                arr = curves[label]
-                w.write_number(2 + t, 1 + j, float(arr[t - 1]) if t <= len(arr) else 0.0)
-
         # ============================================================ Raw_Index
         w = ws_idx
         w.set_column(0, 3, 26)
@@ -570,7 +638,12 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
         # ============================================================ Raw_Debug
         w = ws_raw
         w.set_column(0, 12, 16)
-        w.write(0, 0, "Debug output as delivered (values). Paste a refreshed lgd_recovery block over this, in the same order.",
+        w.write(0, 0, (f"Rows rebuilt from runoff_triangle.csv for vintages from {cfg['vintage_start_effective']} "
+                       f"({cfg['cohorts_included']} of {cfg['cohorts_total']} cohorts), in the layout of lgd_recovery: "
+                       f"ExposureBucket, PrevColSum and ThisColSum are summed over the kept vintages, DiscountIndex = "
+                       f"b − ts + 1, DiscountFactor = (1 + r)^(−index/12), and LGD = 1 − CumulativeSumPV floored at the "
+                       f"previous TermStep's final LGD, as the risk suite does." if filtered else
+                       "Debug output as delivered (values). Paste a refreshed lgd_recovery block over this, in the same order."),
                 f["note"])
         w.write_row(2, 0, COLUMNS, f["head"])
         row0 = 3
@@ -581,7 +654,8 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
                 row0 += 1
 
         # =============================================================== Charts
-        _charts(wb, ws_ch, f, n, wd, T, res_last, lgd_last, nc, wc, p, dataset_name, scenario_name)
+        _charts(wb, ws_ch, f, n, wd, T, res_last, lgd_last, nc, wc, p, dataset_name, scenario_name,
+                cfg["lgd_file_label"])
 
         wb.close()
         with open(path, "rb") as fh:
@@ -593,7 +667,13 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
             pass
 
 
-def _charts(wb, ws, f, n, wd, T, res_last, lgd_last, nc, wc, p, dataset_name, scenario_name) -> None:
+def _logn_a2(res: ExtensionResult) -> float:
+    """The quadratic coefficient of the full log-normal fit, −1/(2σ²), for the Config cache."""
+    s = res.config.get("sigma_fit")
+    return -1.0 / (2.0 * s * s) if s is not None and math.isfinite(s) and s > 0 else float("nan")
+
+
+def _charts(wb, ws, f, n, wd, T, res_last, lgd_last, nc, wc, p, dataset_name, scenario_name, file_label) -> None:
     ws.write_string(0, 0, f"{dataset_name} – {scenario_name}", f["title"])
 
     def line(name, cats, vals, color, dash=None, markers=False):
@@ -615,9 +695,7 @@ def _charts(wb, ws, f, n, wd, T, res_last, lgd_last, nc, wc, p, dataset_name, sc
         cats_w = f"=Tail_Fit!$C$5:${wc}$5"
         ch.add_series(line("Extended – exponential", cats_w, f"=Ext_Exp!$C${r}:${wc}${r}", "#2E75B6"))
         ch.add_series(line("Extended – power", cats_w, f"=Ext_Power!$C${r}:${wc}${r}", "#C55A11"))
-        ch.add_series(line("Extended – reference curve shape", cats_w, f"=Ext_Ref!$C${r}:${wc}${r}", "#548235"))
-        if ts == 1:
-            ch.add_series(line("Reference curve (as supplied)", cats_w, f"=Tail_Fit!$C$8:${wc}$8", "#7F7F7F", "dash"))
+        ch.add_series(line("Extended – log-normal", cats_w, f"=Ext_LogN!$C${r}:${wc}${r}", "#548235"))
         ch.set_title({"name": f"TermStep {ts}: RecoveryPct by bucket (log scale)"})
         ch.set_x_axis({"name": "Bucket", "min": 0, "max": wd})
         ch.set_y_axis({"name": "RecoveryPct", "log_base": 10, "num_format": "0.0000%"})
@@ -626,10 +704,10 @@ def _charts(wb, ws, f, n, wd, T, res_last, lgd_last, nc, wc, p, dataset_name, sc
 
     cats = f"=Results!$A$10:$A${res_last}"
     ch = wb.add_chart({"type": "scatter", "subtype": "straight"})
-    ch.add_series(line("Original (file)", cats, f"=Results!$C$10:$C${res_last}", "#7F7F7F", "dash"))
+    ch.add_series(line(file_label, cats, f"=Results!$C$10:$C${res_last}", "#7F7F7F", "dash"))
     ch.add_series(line("Exponential", cats, f"=Results!$F$10:$F${res_last}", "#2E75B6"))
     ch.add_series(line("Power law", cats, f"=Results!$G$10:$G${res_last}", "#C55A11"))
-    ch.add_series(line("Reference curve shape", cats, f"=Results!$H$10:$H${res_last}", "#548235"))
+    ch.add_series(line("Log-normal", cats, f"=Results!$H$10:$H${res_last}", "#548235"))
     ch.set_title({"name": "LGD by TermStep – original vs extended"})
     ch.set_x_axis({"name": "TermStep", "min": 0, "max": n})
     ch.set_y_axis({"name": "LGD", "num_format": "0.00"})
@@ -649,7 +727,7 @@ def _charts(wb, ws, f, n, wd, T, res_last, lgd_last, nc, wc, p, dataset_name, sc
     ch = wb.add_chart({"type": "scatter", "subtype": "straight"})
     ch.add_series(line("LGD FINAL", cats, f"=LGD_300!$J$13:$J${lgd_last}", NAVY))
     ch.add_series(line("Derived (base row)", cats, f"=LGD_300!$I$13:$I${lgd_last}", "#C55A11", "dash"))
-    ch.add_series(line("Original (file)", cats, f"=LGD_300!$C$13:$C${lgd_last}", "#7F7F7F", "dash"))
+    ch.add_series(line(file_label, cats, f"=LGD_300!$C$13:$C${lgd_last}", "#7F7F7F", "dash"))
     ch.set_title({"name": f"LGD to TermStep {T}"})
     ch.set_x_axis({"name": "TermStep", "min": 0, "max": T})
     ch.set_y_axis({"name": "LGD", "num_format": "0.00"})
@@ -715,8 +793,10 @@ def _readme(ws, f, res, dataset_name, scenario_name, n, wd, T, n_raw, data, p) -
                  "that makes the shape pass through the window on average (scale = Σ observed RecoveryPct over the window ÷ "
                  "Σ shape over the window). Shapes: (1) exponential decay e^(−λb), λ fitted by log-linear regression on the "
                  "reference TermStep row over [FitStart, LastCredible]; (2) power law b^(−γ), γ fitted the same way on ln b; "
-                 "(3) the REFERENCE CURVE shape chosen on Config. λ and γ can be overridden on Config."),
-        ("text", f"4. Ext_Exp / Ext_Power / Ext_Ref – the extended RecoveryPct triangle for every TermStep to bucket {wd} "
+                 "(3) log-normal (1/b)·exp(−(ln b − μ)²/(2σ²)), the form of the client's industry curves, with μ and σ "
+                 "fitted by the same least-squares regression (ln R + ln b on ln b and its square) on the same points. "
+                 "λ, γ, μ and σ can be overridden on Config."),
+        ("text", f"4. Ext_Exp / Ext_Power / Ext_LogN – the extended RecoveryPct triangle for every TermStep to bucket {wd} "
                  f"under each shape: observed values up to the last credible bucket, then scale × shape beyond. PV recoveries "
                  f"per TermStep = SUMPRODUCT(row, v^b) ÷ v^(ts−1). A short-horizon PV (Config Horizon) is also given."),
         ("text", f"5. Results – per TermStep 1..{n}: the original LGD from the debug file, the framework's replica from the "
@@ -726,16 +806,21 @@ def _readme(ws, f, res, dataset_name, scenario_name, n, wd, T, n_raw, data, p) -
                  f"that the base TermStep's extended cash curve c(b) is rolled forward: balance at ts = base balance − cash "
                  f"collected in buckets BaseTS..ts−1, RecoveryPct(ts,b) = c(b) ÷ that balance factor, LGD = 1 − Σ discounted. "
                  f"Column K validates the derivation against every observed row."),
-        ("text", "7. Ref_Curve – the reference curves; Config picks the one used for shape 3 and the comparison chart."),
+        ("text", "7. Raw_Index – where each TermStep's rows start in Raw_Debug; column D checks the row order."),
+        ("text", ("Vintages: " + vintage_text(cfg) + ". Raw_Debug holds the rows rebuilt from runoff_triangle.csv for those "
+                  "vintages, so the 'Original' LGD is the LGD of that subset, not the file's figure.") if cfg.get("vintage_filter")
+                 else "Vintages: all default vintages in the file."),
         ("gap", ""),
         ("head", "OBSERVATIONS AT BUILD"),
         ("text", f"• Exposure-weighted LGD across all TermSteps: original {fmt(avg['lgd_file'])} → {fmt(avg['lgd_exp'])} "
-                 f"(exponential) / {fmt(avg['lgd_power'])} (power) / {fmt(avg['lgd_client'])} (reference curve shape). Selected method: "
+                 f"(exponential) / {fmt(avg['lgd_power'])} (power) / {fmt(avg['lgd_logn'])} (log-normal). Selected method: "
                  f"{cfg['method_label']}, {fmt(avg['lgd_selected'])}; uplift {fmt(avg['uplift'], '.4f')} exposure-weighted, "
                  f"{fmt(avg['uplift_simple'], '.4f')} simple average."),
         ("text", f"• Original → selected LGD by TermStep: {by_ts}."),
         ("text", f"• Fitted decay on the reference row: λ = {fmt(cfg['lam_fit'], '.4f')} (half-life "
-                 f"{fmt(cfg['half_life'], '.1f')} buckets), γ = {fmt(cfg['gam_fit'], '.2f')}; discount rate {cfg['rate']:.2%}."),
+                 f"{fmt(cfg['half_life'], '.1f')} buckets), γ = {fmt(cfg['gam_fit'], '.2f')}, log-normal μ = "
+                 f"{fmt(cfg['mu_fit'])} and σ = {fmt(cfg['sigma_fit'])} (mode at bucket {fmt(cfg['logn_mode'], '.1f')}); "
+                 f"discount rate {cfg['rate']:.2%}."),
         ("text", f"• LGD_300: own rows to TermStep {cfg['last_ts']}; validation (own row − derived) ranges "
                  f"{fmt(s['validation_min'], '.4f')} to {fmt(s['validation_max'], '.4f')}; balance factor at TermStep {T} = "
                  f"{fmt(s['balance_factor_target'])}." + (f" Beyond LastTS: {beyond_txt}." if beyond_txt else "")),
@@ -747,9 +832,9 @@ def _readme(ws, f, res, dataset_name, scenario_name, n, wd, T, n_raw, data, p) -
         ("head", "CAVEATS"),
         ("text", "The extension is a modelling assumption, not data: beyond the last credible bucket nothing is observed. The "
                  "window scale uses the last W credible buckets unweighted; MinExposure is the lever that decides how much of "
-                 "the noisy observed tail is kept. The reference-curve option borrows the supplied curve's decay – it aligns "
-                 "the challenger's tail to that curve by construction, so use shape 1 or 2 as the independent view and shape 3 "
-                 'as the "what if we accept the reference curve\'s tail" view.'),
+                 "the noisy observed tail is kept. All three shapes are fitted to the challenger's own data; the log-normal "
+                 "shares only its functional form with the client's industry curves, so its μ and σ can be compared with the "
+                 "client's parameters without borrowing the client's curve."),
     ]
     for i, (kind, text) in enumerate(lines):
         if kind == "gap":

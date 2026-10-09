@@ -112,7 +112,7 @@ async function projectsView() {
     trail: [{ label: "Projects" }],
     node: h("div", null,
       h("div", { class: "pagehead" },
-        h("div", null, h("h1", null, "Projects"), h("div", { class: "sub" }, "Each project holds its own zips, scenarios, curves and members.")),
+        h("div", null, h("h1", null, "Projects"), h("div", { class: "sub" }, "Each project holds its own zips, scenarios, applied curves and members.")),
         h("div", { class: "actions" }, h("button", { class: "primary", type: "button", onclick: create }, "New project"))),
       h("section", { class: "block" }, body)),
   };

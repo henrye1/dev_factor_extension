@@ -5,12 +5,11 @@ import logging
 import threading
 from collections import OrderedDict
 
-import numpy as np
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..engine.core import EngineError, ExtensionResult, compute
-from ..engine.params import Params, merge_params
+from ..engine.params import Params, load_params, merge_params
 from ..engine.parse import ParseError, RecoveryData
 from .models import ClientCurve, Dataset, Result, Scenario, ScenarioOverride, User, utcnow
 from .storage import BlobStore, StorageError
@@ -45,16 +44,6 @@ class DataCache:
             self._items.pop(blob_key, None)
 
 
-def project_curves(db: Session, project_id: int) -> dict[str, np.ndarray]:
-    """Shape curves for method 3: the curves uploaded to the project, by label."""
-    curves = {}
-    rows = db.execute(select(ClientCurve).where(ClientCurve.project_id == project_id,
-                                                ClientCurve.kind == "shape")).scalars()
-    for row in rows:
-        curves[row.label] = np.asarray(row.values, dtype=float)
-    return curves
-
-
 def applied_curves(db: Session, project_id: int) -> dict[str, ClientCurve]:
     """The client's applied recovery curves uploaded to the project, by label."""
     rows = db.execute(select(ClientCurve).where(ClientCurve.project_id == project_id,
@@ -66,15 +55,10 @@ def effective_params(scenario: Scenario, override: ScenarioOverride | None) -> P
     return merge_params(scenario.params, override.params if override else None)
 
 
-def choose_curve(params: Params, dataset: Dataset, curves: dict[str, np.ndarray]):
-    """The reference curve for a zip: the chosen label, else the zip's own Category1."""
-    label = params.client_cohort or dataset.category
-    curve = curves.get(label)
-    if curve is None and params.method == 3:
-        raise EngineError(
-            f"There is no reference curve '{label}' for this zip. Choose a reference curve in the "
-            f"scenario or in this zip's override, upload one, or use method 1 or 2")
-    return (label if curve is not None else ""), curve
+def vintage_text(cfg: dict) -> str:
+    if not cfg.get("vintage_filter"):
+        return ""
+    return f"from {cfg['vintage_start_effective']} ({cfg['cohorts_included']} of {cfg['cohorts_total']} cohorts)"
 
 
 def summarise(res: ExtensionResult) -> dict:
@@ -82,17 +66,17 @@ def summarise(res: ExtensionResult) -> dict:
     a, c = j["averages"], j["config"]
     return {
         "lgd_file": a["lgd_file"], "lgd_replica": a["lgd_replica"], "lgd_exp": a["lgd_exp"],
-        "lgd_power": a["lgd_power"], "lgd_client": a["lgd_client"],
+        "lgd_power": a["lgd_power"], "lgd_logn": a["lgd_logn"],
         "lgd_selected": a["lgd_selected"], "uplift": a["uplift"],
         "uplift_simple": a["uplift_simple"], "exposure_total": a["exposure_total"],
         "method": c["method"], "method_label": c["method_label"],
-        "lam": c["lam"], "gam": c["gam"], "rate": c["rate"],
+        "lam": c["lam"], "gam": c["gam"], "mu": c["mu"], "sigma": c["sigma"], "rate": c["rate"],
+        "vintage_filter": bool(c["vintage_filter"]), "vintages": vintage_text(c),
         "n": j["n"], "warnings": len(j["warnings"]),
     }
 
 
-def run_one(db: Session, cache: DataCache, scenario: Scenario, dataset: Dataset, user: User,
-            curves: dict[str, np.ndarray] | None = None) -> Result:
+def run_one(db: Session, cache: DataCache, scenario: Scenario, dataset: Dataset, user: User) -> Result:
     """Run one scenario on one zip and upsert the Result row. Failures are recorded, not raised."""
     override = db.get(ScenarioOverride, (scenario.id, dataset.id))
     result = db.get(Result, (scenario.id, dataset.id))
@@ -102,23 +86,22 @@ def run_one(db: Session, cache: DataCache, scenario: Scenario, dataset: Dataset,
     result.computed_by = user.id
     result.computed_at = utcnow()
     result.stale = False
+    result.curve_label = ""                 # kept for older rows; the engine takes no curve now
     try:
         params = effective_params(scenario, override)
         result.effective_params = params.model_dump()
-        label, curve = choose_curve(params, dataset, curves or project_curves(db, scenario.project_id))
-        res = compute(cache.get(dataset.blob_key), params, curve)
+        res = compute(cache.get(dataset.blob_key), params)
         result.status, result.error = "ok", ""
-        result.curve_label = label
         result.payload = res.to_json()
         result.summary = summarise(res)
     except (EngineError, ParseError, StorageError, ValueError) as exc:
         result.status, result.error = "error", str(exc)
-        result.payload, result.summary, result.curve_label = {}, {}, ""
+        result.payload, result.summary = {}, {}
     except Exception:                       # one zip must never take the whole run down
         log.exception("Unexpected error running scenario %s on dataset %s", scenario.id, dataset.id)
         result.status = "error"
         result.error = "The calculation failed unexpectedly. The details are in the server log"
-        result.payload, result.summary, result.curve_label = {}, {}, ""
+        result.payload, result.summary = {}, {}
     db.flush()
     return result
 
@@ -128,13 +111,16 @@ def recompute(db: Session, cache: DataCache, result: Result) -> ExtensionResult:
     parameters it was run with."""
     if result.status != "ok":
         raise EngineError(result.error or "This result has not been computed")
-    params = Params(**result.effective_params)
-    curves = project_curves(db, result.scenario.project_id)
-    curve = curves.get(result.curve_label) if result.curve_label else None
-    if params.method == 3 and curve is None:
-        raise EngineError(f"The client curve '{result.curve_label}' used by this result no longer "
-                          f"exists; run the scenario again")
-    return compute(cache.get(result.dataset.blob_key), params, curve)
+    if is_legacy_payload(result.payload):
+        raise EngineError("This result was computed with the removed reference-curve method; run the scenario again")
+    params = load_params(result.effective_params)
+    return compute(cache.get(result.dataset.blob_key), params)
+
+
+def is_legacy_payload(payload: dict | None) -> bool:
+    """True for a result stored before the reference-curve shape was replaced by log-normal."""
+    avg = (payload or {}).get("averages") or {}
+    return "lgd_client" in avg or ("lgd_logn" not in avg and bool(avg))
 
 
 def mark_stale(db: Session, *, scenario_id: int | None = None, dataset_id: int | None = None,
@@ -149,3 +135,32 @@ def mark_stale(db: Session, *, scenario_id: int | None = None, dataset_id: int |
         stmt = stmt.where(Result.scenario_id.in_(
             select(Scenario.id).where(Scenario.project_id == project_id)))
     db.execute(stmt)
+
+
+def migrate_three_methods(session_factory) -> dict:
+    """One-off data migration for the switch from the reference-curve shape to log-normal
+    (9 October 2026). Idempotent and cheap, so it runs at every start.
+
+    - removes the retired ``client_cohort`` key from scenario and override parameters;
+    - marks every result that still holds reference-curve figures as stale (a stored
+      method 3 keeps its number and now means log-normal; its old figures are never current).
+    """
+    from ..engine.params import RETIRED
+    stripped = stale = 0
+    with session_factory() as db:
+        for s in db.execute(select(Scenario)).scalars():
+            if any(k in (s.params or {}) for k in RETIRED):
+                s.params = {k: v for k, v in s.params.items() if k not in RETIRED}
+                stripped += 1
+        for o in db.execute(select(ScenarioOverride)).scalars():
+            if any(k in (o.params or {}) for k in RETIRED):
+                o.params = {k: v for k, v in o.params.items() if k not in RETIRED}
+                stripped += 1
+        for r in db.execute(select(Result).where(Result.status == "ok", Result.stale.is_(False))).scalars():
+            if is_legacy_payload(r.payload):
+                r.stale = True
+                stale += 1
+        db.commit()
+    if stripped or stale:
+        log.info("Three-methods migration: %d parameter set(s) cleaned, %d result(s) marked out of date", stripped, stale)
+    return {"stripped": stripped, "stale": stale}

@@ -6,7 +6,7 @@ Sheets
                           valuation horizon per cohort
   Marginal_face           month since default down the side; per cohort our selected extended
                           curve from TermStep 1 (cash as % of the balance at default), then the
-                          reference curve and the client's applied curve per cohort
+                          client's applied curve per cohort
   Marginal_outstanding    the same curves as a share of the balance still outstanding each month
   Cumulative_face         cumulative recovery of every curve on Marginal_face
   M_<cohort>              marginal recoveries by TermStep for the first K remaining steps (final basis)
@@ -23,7 +23,7 @@ import xlsxwriter
 
 from ..engine.applied import to_outstanding
 from ..engine.core import ExtensionResult
-from .summary_xlsx import final_marginals
+from .summary_xlsx import final_marginals, vintage_text
 from .tables import PARAM_LABELS
 
 NAVY = "#1F3A5F"
@@ -82,11 +82,11 @@ def build_curves_workbook(project_name: str, scenario_name: str, items: list[dic
         ws.write_string(0, 0, f"{project_name} – {scenario_name}: LGD and recovery curves for every cohort", f["title"])
         lines = [
             ("LGD_by_TermStep", "Final LGD by TermStep per cohort (own extended row to LastTS, base row rolled forward beyond), then LGD within the valuation horizon."),
-            ("Marginal_face", "Marginal recovery by month since default: cash in the month as a share of the balance at default. Our selected extended curve from TermStep 1 per cohort, the reference curve used by method 3, and the client's applied curve where uploaded."),
+            ("Marginal_face", "Marginal recovery by month since default: cash in the month as a share of the balance at default. Our selected extended curve from TermStep 1 per cohort, and the client's applied curve where uploaded."),
             ("Marginal_outstanding", "The same curves as a share of the balance still outstanding at the start of each month (how a client who applies rates to the outstanding balance sees them)."),
             ("Cumulative_face", "Cumulative recovery of every curve on Marginal_face."),
             ("M_<cohort>", f"Marginal recoveries by TermStep for the first {k_max} remaining steps, final basis: cash in remaining step k as a share of the balance at the TermStep."),
-            ("Out of date", "A cohort marked out of date was run before its scenario, override or a reference curve changed; run it again for current figures."),
+            ("Out of date", "A cohort marked out of date was run before its scenario, override or zip data changed; run it again for current figures."),
         ]
         for i, (k, v) in enumerate(lines, start=2):
             ws.write_string(i, 0, k, f["bold"])
@@ -104,12 +104,12 @@ def build_curves_workbook(project_name: str, scenario_name: str, items: list[dic
                 ws.write_string(r, 1, "" if v is None else str(v))
         r += 2
         ws.write_string(r, 0, "Cohort", f["head"])
-        ws.write_string(r, 1, "Method, reference curve, client applied curve, status", f["head"])
+        ws.write_string(r, 1, "Method, vintages, client applied curve, status", f["head"])
         for it in items:
             r += 1
             cfg = it["res"].config
             ws.write_string(r, 0, it["zip"])
-            ws.write_string(r, 1, f"{cfg['method_label']}; reference curve {cfg['client_cohort'] or 'none'}; "
+            ws.write_string(r, 1, f"{cfg['method_label']}; {vintage_text(cfg).lower()}; "
                                   f"client applied curve {it.get('applied_label') or 'none'}; "
                                   f"{'out of date' if it['stale'] else 'current'}")
 
@@ -127,11 +127,6 @@ def build_curves_workbook(project_name: str, scenario_name: str, items: list[dic
             sel = int(res.config["method"]) - 1
             mb = int(res.config["max_bucket"])
             face_cols.append((f"{it['zip']} – ours ({res.config['method_label']})", res.ext[sel, 1, 1:mb + 1].copy()))
-        for it in items:
-            res = it["res"]
-            if res.config["client_cohort"]:
-                mb = int(res.config["max_bucket"])
-                face_cols.append((f"{it['zip']} – reference curve {res.config['client_cohort']}", res.shapes[2, 1:mb + 1].copy()))
         for it in items:
             ap = it.get("applied_label")
             if ap and ap in applied:

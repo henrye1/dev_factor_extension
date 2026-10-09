@@ -10,7 +10,7 @@ from hazard_ext.engine.curves import CurveError, parse_curve_file
 from hazard_ext.engine.params import DEFAULTS, Params, clean_overrides, merge_params
 from hazard_ext.engine.parse import ParseError, RecoveryData, parse_zip
 
-from .conftest import ZIP_NAMES, load_zip, prototype_curves
+from .conftest import ZIP_NAMES, load_zip
 
 
 def _zip_bytes(files: dict[str, str]) -> io.BytesIO:
@@ -20,6 +20,10 @@ def _zip_bytes(files: dict[str, str]) -> io.BytesIO:
             zf.writestr(name, text)
     buf.seek(0)
     return buf
+
+
+GOOD_CSV = ("EventType,TermStep,TermDays,ExposureBucket,BucketIndex,PrevColSum,ThisColSum,RecoveryPct,DiscountIndex,"
+            "DiscountFactor,Contribution,CumulativeSumPV,LGD\nLifetime,1,0,100,1,100,90,0.1,1,0.98,0.098,0.098,0.902\n")
 
 
 # ------------------------------------------------------------------- parsing
@@ -35,6 +39,30 @@ def test_zip_profile(name):
     assert prof["last_obs_bucket"] == prof["n"] - 1          # the last bucket is empty
     assert prof["implied_rate"] == pytest.approx(data.meta["Parameters"]["InterestRate"], abs=1e-6)
     assert prof["opening_exposure"] > 0
+    assert prof["has_runoff"] is True and prof["vintage_filter"] is True and prof["cohort_count"] > 0
+    assert prof["cohort_first"] < prof["cohort_last"]
+
+
+def test_zip_without_runoff_uploads_with_the_filter_unavailable():
+    data = parse_zip(_zip_bytes({"lgd_recovery.csv": GOOD_CSV, "debug.json": "{}"}))
+    prof = data.profile()
+    assert prof["has_runoff"] is False and prof["vintage_filter"] is False and prof["cohort_first"] is None
+    assert not data.runoff_status.get("ok") and not data.vintage_filter_available
+
+
+def test_bad_runoff_files():
+    with pytest.raises(ParseError, match="CohortDate"):
+        parse_zip(_zip_bytes({"lgd_recovery.csv": GOOD_CSV, "runoff_triangle.csv":
+                              "EventType,CohortDate,Bucket,ExposureAmount,AccountCount\nLifetime,soon,0,10,1\n"}))
+    with pytest.raises(ParseError, match="Bucket"):
+        parse_zip(_zip_bytes({"lgd_recovery.csv": GOOD_CSV, "runoff_triangle.csv":
+                              "EventType,CohortDate,Bucket,ExposureAmount,AccountCount\nLifetime,2020-01-31,-1,10,1\n"}))
+    with pytest.raises(ParseError, match="missing column"):
+        parse_zip(_zip_bytes({"lgd_recovery.csv": GOOD_CSV, "runoff_triangle.csv": "EventType,CohortDate\nLifetime,2020-01-31\n"}))
+    # a runoff that does not reproduce the file keeps the zip but disables the filter
+    data = parse_zip(_zip_bytes({"lgd_recovery.csv": GOOD_CSV, "runoff_triangle.csv":
+                                 "EventType,CohortDate,Bucket,ExposureAmount,AccountCount\nLifetime,2020-01-31,0,10,1\nLifetime,2020-01-31,1,5,1\n"}))
+    assert data.profile()["has_runoff"] is True and data.profile()["vintage_filter"] is False
 
 
 def test_round_trip_through_bytes(zip44):
@@ -83,7 +111,7 @@ def test_defaults_match_the_workbook_config():
     p = Params()
     assert (p.event_type, p.max_bucket, p.min_exposure, p.window, p.fit_start, p.ref_ts,
             p.method, p.horizon, p.horizon2, p.floor, p.base_ts) == \
-           ("Lifetime", 420, 100_000_000, 12, 24, 1, 3, 12, 120, 0, 1)
+           ("Lifetime", 420, 100_000_000, 12, 24, 1, 1, 12, 120, 0, 1)
     assert p.rate is None and p.last_ts is None and p.lambda_override is None
     assert p.target_ts == 300
 

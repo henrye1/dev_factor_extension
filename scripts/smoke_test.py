@@ -23,7 +23,6 @@ sys.path.insert(0, str(ROOT))
 from hazard_ext.engine.core import compute            # noqa: E402
 from hazard_ext.engine.params import Params            # noqa: E402
 from hazard_ext.engine.parse import parse_zip          # noqa: E402
-from tests.conftest import prototype_curves, prototype_curves_csv  # noqa: E402
 
 H = {"X-Requested-With": "hazard-ext"}
 
@@ -67,9 +66,7 @@ def main(base: str) -> int:
             assert out[0]["ok"], out[0]
             ids[name] = out[0]["dataset"]["id"]
 
-        step("upload the prototype reference curves", lambda: check(c.post(
-            f"/api/projects/{pid}/curves", files={"file": ("prototype.csv", prototype_curves_csv(), "text/csv")}, headers=H)))
-        sid = step("create a scenario", lambda: check(c.post(
+        sid = step("create a scenario (log-normal)", lambda: check(c.post(
             f"/api/projects/{pid}/scenarios", json={"name": "Base", "params": {"method": 3, "target_ts": 360, "max_bucket": 480}}, headers=H), 201).json()["id"])
         step("override for one zip", lambda: check(c.put(
             f"/api/projects/{pid}/scenarios/{sid}/overrides/{ids['22']}", json={"params": {"method": 2, "last_ts": 120}}, headers=H)))
@@ -78,7 +75,7 @@ def main(base: str) -> int:
         assert all(r["status"] == "ok" for r in runs), runs
 
         res = step("read the stored result", lambda: check(c.get(f"/api/projects/{pid}/results/{sid}/{ids['44']}")).json())
-        expect = compute(parse_zip(str(ROOT / "debug (44).zip")), Params(target_ts=360, max_bucket=480), prototype_curves()["44"])
+        expect = compute(parse_zip(str(ROOT / "debug (44).zip")), Params(method=3, target_ts=360, max_bucket=480))
         diff = max(abs(a - b) for a, b in zip(res["payload"]["lgd_ts"]["lgd_final"], expect.lgd_ts["lgd_final"]))
         assert diff < 1e-12, diff
         print(f"ok   stored LGD equals the engine run directly (max difference {diff:.1e})")
@@ -94,6 +91,17 @@ def main(base: str) -> int:
         f = step("Excel formula export", lambda: check(c.get(base_url + "?kind=formula")))
         assert "Raw_Debug" in openpyxl.load_workbook(io.BytesIO(f.content), read_only=True).sheetnames
         step("summary workbook", lambda: check(c.get(f"/api/projects/{pid}/export/summary")))
+
+        sid2 = step("create a scenario on the last 10 years of vintages", lambda: check(c.post(
+            f"/api/projects/{pid}/scenarios", json={"name": "Ten years", "params": {"method": 3, "target_ts": 360, "max_bucket": 480,
+                                                                                   "vintage_years": 10}}, headers=H), 201).json()["id"])
+        runs = step("run it on both zips", lambda: check(c.post(f"/api/projects/{pid}/scenarios/{sid2}/run", json={}, headers=H)).json())
+        assert all(r["status"] == "ok" for r in runs), runs
+        r22 = check(c.get(f"/api/projects/{pid}/results/{sid2}/{ids['22']}")).json()
+        assert r22["payload"]["config"]["vintage_filter"] is True, r22["payload"]["config"]
+        print(f"     VB22: {r22['payload']['config']['cohorts_included']} of {r22['payload']['config']['cohorts_total']} cohorts "
+              f"from {r22['payload']['config']['vintage_start_effective']}, LGD {r22['summary']['lgd_selected']:.4f}")
+        step("formula export with the vintage filter", lambda: check(c.get(f"/api/projects/{pid}/results/{sid2}/{ids['22']}/export?kind=formula")))
 
         s = check(c.get(f"/api/projects/{pid}/scenarios/{sid}")).json()
         step("edit the scenario (marks results out of date)", lambda: check(c.put(

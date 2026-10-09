@@ -8,7 +8,7 @@ Sheets
   LGD_final_wide       final LGD by TermStep, one column per zip and scenario (chart-ready)
   Scenario_deltas      each scenario against the first: exposure-weighted and by TermStep
   Cumulative_recovery  cumulative undiscounted recovery from TermStep 1 by remaining step, next to
-                       the reference curve and the client's applied curve where present
+                       the client's applied curve where present
   Exposure_credibility per zip and scenario by TermStep: exposure, last observed and credible
                        bucket, buckets added, file LGD floor gap
   Charts               final LGD by TermStep for every scenario, one chart per zip
@@ -59,6 +59,14 @@ def final_marginals(res: ExtensionResult, k_max: int) -> np.ndarray:
             row[:len(seg)] = seg
         out[ts - 1, :n_k] = row[:n_k]
     return out
+
+
+def vintage_text(cfg: dict) -> str:
+    """'All vintages' or the window a filtered run used, for headings and summaries."""
+    if not cfg.get("vintage_filter"):
+        return "All vintages"
+    return (f"From {cfg['vintage_start_effective']} ({cfg['cohorts_included']} of {cfg['cohorts_total']} cohorts, "
+            f"{cfg['exposure_share']:.0%} of exposure)")
 
 
 def _wavg(w: np.ndarray, x: np.ndarray) -> float:
@@ -133,46 +141,50 @@ def build_summary_workbook(project_name: str, items: list[dict], applied: dict[s
         ws.write_string(0, 0, f"LGD tail extension – {project_name}", f["title"])
         ws.write_string(1, 0, "One row per zip and scenario. Weighted figures use the opening exposure at each TermStep. "
                               "Horizon LGDs count recoveries within 120 and 12 months of each TermStep.", f["note"])
-        heads = ["Zip", "Category", "Scenario", "Out of date", "Method", "Reference curve", "Discount rate",
+        heads = ["Zip", "Category", "Scenario", "Out of date", "Method", "Vintages", "Discount rate",
                  "Σ exposure at ts (weights, R)", "Observed TermSteps", "Target TermStep", "MaxBucket", "MinExposure applied (R)",
-                 "Original LGD", "Replica LGD", "LGD exponential", "LGD power law", "LGD reference curve shape",
+                 "Original LGD", "Replica LGD", "LGD exponential", "LGD power law", "LGD log-normal",
                  "LGD SELECTED", "Uplift (weighted)", "Uplift (simple)",
                  "LGD within 120 months (weighted, derived basis)", "LGD within 12 months (weighted, selected)",
                  "λ fitted", "γ fitted", "λ used", "γ used", "Half-life (months)", "Reference row last credible bucket",
                  "Regression points", "LastTS applied", "Tie-out (max abs)", "File LGD floored (TermSteps)",
-                 "Max validation (own − derived)", "Balance factor at Target", "Warnings", "Computed at"]
+                 "Max validation (own − derived)", "Balance factor at Target", "Warnings", "Computed at",
+                 "Log-normal μ fitted", "Log-normal σ fitted", "Log-normal μ used", "Log-normal σ used",
+                 "Cohorts included", "Cohorts in zip", "Share of at-default exposure"]
         ws.set_row(3, 48)
         for c, h_ in enumerate(heads):
             ws.write_string(3, c, h_, f["head"])
-        fmts = {6: f["pct"], 7: f["money"], 11: f["money"], 30: f["sci"]}
+        fmts = {6: f["pct"], 7: f["money"], 11: f["money"], 30: f["sci"], 42: f["pct"]}
         for i, it in enumerate(items):
             res: ExtensionResult = it["res"]
             cfg, avg, R, L = res.config, res.averages, res.results, res.lgd_ts
             w = R["exposure"]
             n = res.n
             row = [it["zip"], it["category"], it["scenario"], "yes" if it["stale"] else "", cfg["method_label"],
-                   cfg["client_cohort"] or "", cfg["rate"], avg["exposure_total"], n, cfg["target_ts"], cfg["max_bucket"],
+                   vintage_text(cfg), cfg["rate"], avg["exposure_total"], n, cfg["target_ts"], cfg["max_bucket"],
                    cfg["min_exposure_abs"], avg["lgd_file"], avg["lgd_replica"], avg["lgd_exp"], avg["lgd_power"],
-                   avg["lgd_client"], avg["lgd_selected"], avg["uplift"], avg["uplift_simple"],
+                   avg["lgd_logn"], avg["lgd_selected"], avg["uplift"], avg["uplift_simple"],
                    _wavg(w, L["lgd_valuation_horizon"][:n]), _wavg(w, R["lgd_horizon"]),
                    cfg["lam_fit"], cfg["gam_fit"], cfg["lam"], cfg["gam"], cfg["half_life"], cfg["ref_last_cred"],
                    cfg["fit_points"], cfg["last_ts"], max(abs(avg["tie_max"]), abs(avg["tie_min"])),
                    avg.get("file_floored_count", 0), res.lgd_ts_summary["validation_max"],
-                   res.lgd_ts_summary["balance_factor_target"], len(res.warnings), it["computed_at"]]
+                   res.lgd_ts_summary["balance_factor_target"], len(res.warnings), it["computed_at"],
+                   cfg["mu_fit"], cfg["sigma_fit"], cfg["mu"], cfg["sigma"],
+                   cfg["cohorts_included"], cfg["cohorts_total"], cfg["exposure_share"]]
             r = 4 + i
             for c, v in enumerate(row):
                 if isinstance(v, str):
                     ws.write_string(r, c, v)
                 else:
-                    num(ws, r, c, v, fmts.get(c, f["lgd"] if 12 <= c <= 21 or 22 <= c <= 26 or 32 <= c <= 33 else f["int"]))
+                    num(ws, r, c, v, fmts.get(c, f["lgd"] if 12 <= c <= 21 or 22 <= c <= 26 or 32 <= c <= 33 or 36 <= c <= 39 else f["int"]))
         ws.set_column(0, 2, 18)
-        ws.set_column(3, 35, 13)
+        ws.set_column(3, 42, 13)
         ws.freeze_panes(4, 3)
 
         # ============================================================ LGD_by_TS
         ws = wb.add_worksheet("LGD_by_TS")
         heads = ["Zip", "Scenario", "TermStep", "Source", "LGD final", "Original LGD (file)", "Own-row LGD",
-                 "Derived – exponential", "Derived – power law", "Derived – reference curve shape",
+                 "Derived – exponential", "Derived – power law", "Derived – log-normal",
                  "Validation (own − derived)", "Balance factor", "LGD within 120 months", "LGD within 12 months",
                  "Undiscounted remaining recovery", "Exposure at ts (R)"]
         ws.set_row(0, 40)
@@ -188,7 +200,7 @@ def build_summary_workbook(project_name: str, items: list[dict], applied: dict[s
                 ws.write_number(r, 2, int(L["ts"][i]))
                 ws.write_string(r, 3, str(L["source"][i]))
                 for c, key in enumerate(["lgd_final", "lgd_file", "lgd_own", "derived_exp", "derived_power",
-                                         "derived_client", "validation", "balance_factor", "lgd_valuation_horizon",
+                                         "derived_logn", "validation", "balance_factor", "lgd_valuation_horizon",
                                          "lgd_short_horizon", "undisc_remaining"], start=4):
                     num(ws, r, c, L[key][i], f["lgd"])
                 num(ws, r, 15, L["exposure"][i], f["money"])
@@ -270,8 +282,8 @@ def build_summary_workbook(project_name: str, items: list[dict], applied: dict[s
         # ==================================================== Cumulative_recovery
         ws = wb.add_worksheet("Cumulative_recovery")
         ws.write_string(0, 0, "Cumulative undiscounted recovery from TermStep 1 by remaining step, as a share of the balance at "
-                              "default: the selected extended row of each zip and scenario, the reference curve as supplied, and "
-                              "the client's applied curve (face basis) where one exists.", f["note"])
+                              "default: the selected extended row of each zip and scenario, and the client's applied curve "
+                              "(face basis) where one exists.", f["note"])
         cols = []
         for it in items:
             res = it["res"]
@@ -280,11 +292,6 @@ def build_summary_workbook(project_name: str, items: list[dict], applied: dict[s
             cols.append((f"{it['zip']} | {it['scenario']}", np.cumsum(res.ext[sel, 1, 1:mb + 1])))
         seen = set()
         for it in items:
-            res = it["res"]
-            label = res.config["client_cohort"]
-            if label and ("ref", label) not in seen:
-                seen.add(("ref", label))
-                cols.append((f"Reference curve {label}", np.cumsum(res.shapes[2, 1:int(res.config['max_bucket']) + 1])))
             ap = it.get("applied_label")
             if ap and ap in applied and ("app", ap) not in seen:
                 seen.add(("app", ap))

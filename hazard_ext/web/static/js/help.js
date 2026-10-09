@@ -18,16 +18,16 @@ export const METHOD_HELP = {
     text: [
       "The tail shape is b^(−γ). The recovery rate still falls every month, but by a shrinking proportion, so the tail is heavier than the exponential and has no fixed half-life.",
       "γ is fitted the same way as λ, by regressing ln RecoveryPct on ln b over the same window, and can be replaced with the γ override.",
-      "This is the second independent view: only the challenger's own data, but with the assumption that late collections persist the way long-run recovery books tend to. It sits between the exponential and the client shape.",
+      "This is the second independent view: only the challenger's own data, but with the assumption that late collections persist the way long-run recovery books tend to. It usually sits between the exponential and the log-normal.",
     ],
   },
   3: {
-    title: "Method 3: reference curve shape",
+    title: "Method 3: log-normal",
     text: [
-      "The tail shape is a supplied reference recovery curve: monthly cash as a share of the balance at default, by month since default. Each zip uses the curve whose label equals its category. There are no built-in curves: the project uploads the client's curves under Members and curves.",
-      "Nothing about the level is borrowed. The scale is still fitted to the challenger's own last credible buckets; only the rate of decay beyond them follows the reference curve.",
-      "The challenger's tail is therefore aligned to the reference curve by construction. It answers one question: what would the challenger show if we accepted that curve's tail? With the July 2026 prototype curves it added the most recovery of the three.",
-      "A zip with no uploaded curve of its own label (ALL, for one) needs a curve named in an override, an uploaded curve with that label, or method 1 or 2.",
+      "The tail shape is (1/b) × exp(−(ln b − μ)² ÷ (2σ²)): the log-normal density in the bucket number, the same functional form as the client's industry recovery curves. Recoveries rise to a peak at bucket exp(μ − σ²) and then decay, more slowly than the exponential and with a heavier tail the larger σ is.",
+      "μ and σ are fitted to the challenger's own data with the same log-linear least-squares regression as λ and γ, on the same points: ln RecoveryPct + ln b is regressed on ln b and its square along the reference row from FitStart to that row's last credible bucket. Either parameter can be replaced with an override; with one given, the other is still fitted by a single regression.",
+      "Nothing is borrowed from the client except the functional form. The level is scaled to the challenger's own last credible buckets like the other two shapes, so the fitted μ and σ can be compared directly with the client's parameters without using the client's curve.",
+      "The fit is undefined when the tail is not concave in ln b over the regression window (the quadratic coefficient is not negative) or when fewer than three points remain. The log-normal columns are then blank, a warning explains why, and a scenario on method 3 fails for that zip with a clear message rather than falling back to another shape.",
     ],
   },
 };
@@ -64,6 +64,14 @@ export const CONCEPT_HELP = {
       "Under Members and curves, the comparison section puts the observed data, our three fitted tails and the client's curve on one chart, on either basis. Switching to the outstanding basis shows every curve the way a client who applies rates to the outstanding balance sees it; the cumulative table below it compares our selected tail with the client's curve at fixed horizons.",
     ],
   },
+  vintages: {
+    title: "Vintage windows",
+    text: [
+      "lgd_recovery.csv is one triangle over every default vintage in the file. The same zip carries runoff_triangle.csv with the exposure of each default vintage (CohortDate) month by month, from which the app rebuilds the triangle for any set of vintages: for a TermStep and bucket it sums, over the kept vintages observed at that bucket, the exposure at the TermStep and the balances before and after the bucket.",
+      "On upload the app rebuilds the triangle with every vintage and checks it against lgd_recovery.csv to within rounding. Only zips that pass can be filtered; the project page shows the vintage range of each zip. Zips uploaded before this was added hold no runoff data and must be uploaded again.",
+      "A scenario chooses the vintages once: the last N years of each zip's own vintages (so one scenario stays dynamic across zips) or vintages from a month. With a filter the 'Original' LGD is the LGD of the rebuilt subset, not the file's figure, and is labelled 'LGD (vintages from …)'. The observed triangle is shallower, so more of each row is fitted tail, and a Rand MinExposure cuts credibility earlier on the smaller book; a percentage MinExposure follows the subset.",
+    ],
+  },
   derived: {
     title: "Derived TermSteps beyond LastTS",
     text: [
@@ -84,7 +92,7 @@ export const PARAM_HELP = {
     title: "MaxBucket",
     what: "The last bucket to which every row is extended. Recoveries after it are not counted.",
     def: "420 in the workbooks; 480 in the current scenarios.",
-    effect: "Raising it counts more tail recovery and lowers LGD slightly under the heavier shapes (power law and reference curve shape); the exponential tail is usually spent long before. Beyond the end of the reference curve shape 3 adds nothing.",
+    effect: "Raising it counts more tail recovery and lowers LGD slightly under the heavier shapes (power law and log-normal); the exponential tail is usually spent long before.",
   },
   horizon2: {
     title: "Valuation horizon (months)",
@@ -101,15 +109,9 @@ export const PARAM_HELP = {
   method: {
     title: "Method",
     what: "Which tail shape is reported as the selected LGD. All three are always computed and shown side by side.",
-    def: "3, reference curve shape.",
+    def: "1, exponential.",
     effect: "Changes the selected columns, the uplift, the LGD-to-Target table and the Excel exports. See the method explanations for what each shape assumes.",
     methods: true,
-  },
-  client_cohort: {
-    title: "Reference curve",
-    what: "The curve method 3 scales its tail to, also drawn on the comparison chart. Empty means the curve whose label matches the zip's category.",
-    def: "Empty.",
-    effect: "A different curve changes the decay of the method 3 tail only; the level is still fitted to the zip's own data. The ALL zip has no curve of its own and needs one named here or in its override.",
   },
   min_exposure_mode: {
     title: "MinExposure basis",
@@ -136,14 +138,14 @@ export const PARAM_HELP = {
     effect: "A positive floor stops the tail from decaying to nothing and lowers LGD for every row. Use it only where a minimum collection rate is a defensible assumption.",
   },
   ref_ts: {
-    title: "Reference TermStep for λ / γ",
-    what: "The row whose observed tail is used to fit the decay parameters λ and γ.",
+    title: "Reference TermStep for the fit",
+    what: "The row whose observed tail is used to fit the decay parameters λ, γ and the log-normal μ and σ.",
     def: "1, the longest and best-populated row.",
     effect: "A later row has fewer buckets and less exposure, so the fit is noisier. Change it only when TermStep 1 is not representative.",
   },
   fit_start: {
     title: "FitStart bucket",
-    what: "The first bucket in the regression that fits λ and γ. The fit runs from here to the reference row's last credible bucket.",
+    what: "The first bucket in the regression that fits λ, γ, μ and σ. The fit runs from here to the reference row's last credible bucket.",
     def: "24, past the early hump of fresh collections.",
     effect: "Starting earlier includes the hump and flattens the fitted decay; starting later fits only the tail and needs enough credible buckets after it to be reliable. A warning appears when fewer than three points remain.",
   },
@@ -151,7 +153,25 @@ export const PARAM_HELP = {
     title: "λ override",
     what: "Replaces the fitted exponential decay with a given value. Empty means fitted.",
     def: "Empty.",
-    effect: "Only the exponential tail changes. A smaller λ decays more slowly and adds more recovery. The prototype log-normal curve for cohort 44 decays at about λ ≈ 0.013 between months 96 and 300; the challenger's own fit gives about 0.053.",
+    effect: "Only the exponential tail changes. A smaller λ decays more slowly and adds more recovery. The challenger's own fit for cohort 44 gives about 0.053.",
+  },
+  mu_override: {
+    title: "Log-normal μ override",
+    what: "Replaces the fitted location of the log-normal shape (on ln b) with a given value. Empty means fitted. With μ given and σ empty, σ is still fitted by a single regression.",
+    def: "Empty.",
+    effect: "Only the log-normal tail changes. A larger μ moves the peak and the mass of recoveries to later buckets. The fitted values at the workbook defaults are about 3.04 for cohort 44 and 3.77 for cohort 22; Nutun's own curve for cohort 44 pins its m at 3.25.",
+  },
+  sigma_override: {
+    title: "Log-normal σ override",
+    what: "Replaces the fitted spread of the log-normal shape (on ln b) with a given value above 0. Empty means fitted. With σ given and μ empty, μ is still fitted by a single regression.",
+    def: "Empty.",
+    effect: "Only the log-normal tail changes. A larger σ gives a heavier tail and more late recovery. The fitted values at the workbook defaults are about 0.70 for cohort 44 and 0.79 for cohort 22.",
+  },
+  vintages: {
+    title: "Vintages",
+    what: "Which default vintages (CohortDate in runoff_triangle.csv) feed the recovery triangle: all of them, the last N years counted back from each zip's own latest vintage, or every vintage from a chosen month.",
+    def: "All vintages, which is the file's own triangle.",
+    effect: "A shorter window drops old vintages: fewer cohorts, less exposure and a shallower observed triangle, so more of each row is fitted tail. 'Last N years' resolves per zip, so the same scenario gives each zip its own start month. The run fails with a clear message on a zip whose runoff data is missing or does not reproduce its file; upload that zip again.",
   },
   gamma_override: {
     title: "γ override",
@@ -173,7 +193,7 @@ export const PARAM_HELP = {
   },
   event_type: {
     title: "EventType",
-    what: "Which block of lgd_recovery.csv is used.",
+    what: "Which block of lgd_recovery.csv (and of runoff_triangle.csv) is used.",
     def: "Lifetime.",
     effect: "In every zip delivered so far the three blocks are identical, so this changes nothing. It exists for files where they differ.",
   },

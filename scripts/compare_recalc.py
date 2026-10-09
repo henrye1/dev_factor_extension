@@ -33,6 +33,11 @@ def main(expected_path: str, recalc_path: str) -> int:
     check("LGD_300 final LGD", got["final"], exp["final"])
     check("lambda", [got["lam"]], [exp["lam"]], 1e-10)
     check("gamma", [got["gam"]], [exp["gam"]], 1e-10)
+    if "mu" in exp:
+        check("log-normal mu", [got["mu"]], [exp["mu"]], 1e-9)
+        check("log-normal sigma", [got["sigma"]], [exp["sigma"]], 1e-9)
+    if "lgd_logn" in exp:
+        check("Results LGD log-normal", got["lgd_logn"], exp["lgd_logn"])
     check("weighted selected LGD", [got["avg_sel"]], [exp["avg_sel"]])
     tie = max(abs(got["tie_max"]), abs(got["tie_min"]))
     print(f"{'ok  ' if tie < 1e-9 else 'FAIL'} tie-out in Excel: {tie:.3e}")

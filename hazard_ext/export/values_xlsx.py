@@ -10,7 +10,7 @@ from xlsxwriter.utility import xl_rowcol_to_cell
 
 from ..engine.core import ExtensionResult
 from .tables import (AVERAGE_LABELS, CONFIG_LABELS, LGD_TS_COLUMNS, PARAM_LABELS,
-                     RESULT_COLUMNS, TAIL_COLUMNS)
+                     RESULT_COLUMNS, TAIL_COLUMNS, headed)
 
 NAVY = "#1F3A5F"
 
@@ -86,6 +86,7 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
     n, mb = res.n, int(res.config["max_bucket"])
     cols = int(res.shape_stats["tri_width"])
     p, cfg, avg = res.params, res.config, res.averages
+    has_logn = avg.get("lgd_logn") is not None and math.isfinite(avg["lgd_logn"])
 
     # ------------------------------------------------------------------ Summary
     ws = wb.add_worksheet("Summary")
@@ -133,9 +134,9 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
 
     # ------------------------------------------------------------------- tables
     ws_res = wb.add_worksheet("Results")
-    _table(ws_res, f, 0, res.results, RESULT_COLUMNS)
+    _table(ws_res, f, 0, res.results, headed(RESULT_COLUMNS, cfg))
     ws_lgd = wb.add_worksheet("LGD_TS")
-    _table(ws_lgd, f, 0, res.lgd_ts, LGD_TS_COLUMNS)
+    _table(ws_lgd, f, 0, res.lgd_ts, headed(LGD_TS_COLUMNS, cfg))
     ws_tail = wb.add_worksheet("Tail_Fit")
     _table(ws_tail, f, 0, res.tail_fit, TAIL_COLUMNS)
 
@@ -147,8 +148,8 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
     for ts in chart_ts:
         cur = res.curve(ts)
         wsd.write(0, c0, f"TermStep {ts}: RecoveryPct by bucket", f["bold"])
-        heads = ["Bucket", "Observed", "Exponential", "Power", "Reference curve shape"]
-        keys = ["bucket", "observed", "exp", "power", "client"]
+        heads = ["Bucket", "Observed", "Exponential", "Power", "Log-normal"]
+        keys = ["bucket", "observed", "exp", "power", "logn"]
         for j, h in enumerate(heads):
             wsd.write(1, c0 + j, h, f["head"])
         for j, k in enumerate(keys):
@@ -174,11 +175,11 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
 
     T = len(res.lgd_ts["ts"])
     ch = wb.add_chart({"type": "scatter", "subtype": "straight"})
-    ch.add_series(series("Results", RESULT_COLUMNS, "lgd_file", n, "Original (file)", color="#7F7F7F", dash_type="dash"))
+    ch.add_series(series("Results", RESULT_COLUMNS, "lgd_file", n, cfg["lgd_file_label"], color="#7F7F7F", dash_type="dash"))
     ch.add_series(series("Results", RESULT_COLUMNS, "lgd_exp", n, "Exponential", color="#2E75B6"))
     ch.add_series(series("Results", RESULT_COLUMNS, "lgd_power", n, "Power law", color="#C55A11"))
-    if cfg.get("client_cohort") is not None:
-        ch.add_series(series("Results", RESULT_COLUMNS, "lgd_client", n, "Reference curve shape", color="#548235"))
+    if has_logn:
+        ch.add_series(series("Results", RESULT_COLUMNS, "lgd_logn", n, "Log-normal", color="#548235"))
     ch.set_title({"name": "LGD by TermStep – original vs extended"})
     ch.set_x_axis({"name": "TermStep", "min": 0, "max": n})
     ch.set_y_axis({"name": "LGD", "num_format": "0.00"})
@@ -197,7 +198,7 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
     ch = wb.add_chart({"type": "scatter", "subtype": "straight"})
     ch.add_series(series("LGD_TS", LGD_TS_COLUMNS, "lgd_final", T, "LGD FINAL", color=NAVY))
     ch.add_series(series("LGD_TS", LGD_TS_COLUMNS, "derived_selected", T, "Derived (base row)", color="#C55A11", dash_type="dash"))
-    ch.add_series(series("LGD_TS", LGD_TS_COLUMNS, "lgd_file", T, "Original (file)", color="#7F7F7F", dash_type="dash"))
+    ch.add_series(series("LGD_TS", LGD_TS_COLUMNS, "lgd_file", T, cfg["lgd_file_label"], color="#7F7F7F", dash_type="dash"))
     ch.set_title({"name": f"LGD to TermStep {T}"})
     ch.set_x_axis({"name": "TermStep", "min": 0, "max": T})
     ch.set_y_axis({"name": "LGD", "num_format": "0.00"})
@@ -220,9 +221,9 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
     for (ts, c0, rows), cell in zip(blocks, anchor):
         ch = wb.add_chart({"type": "scatter", "subtype": "straight"})
         styles = [("Observed", "#000000", None), ("Exponential", "#2E75B6", None),
-                  ("Power law", "#C55A11", None), ("Reference curve shape", "#548235", None)]
+                  ("Power law", "#C55A11", None), ("Log-normal", "#548235", None)]
         for j, (name, color, _) in enumerate(styles, start=1):
-            if name == "Reference curve shape" and cfg.get("client_cohort") is None:
+            if name == "Log-normal" and not has_logn:
                 continue
             ch.add_series({
                 "name": name, "categories": ["Chart_Data", 2, c0, 1 + rows, c0],
@@ -243,9 +244,9 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
               res.E, n, n, f["money"])
     names = [("Ext_Exp", "Extended RecoveryPct – shape 1: exponential decay"),
              ("Ext_Power", "Extended RecoveryPct – shape 2: power law"),
-             ("Ext_Ref", "Extended RecoveryPct – shape 3: reference curve")]
+             ("Ext_LogN", "Extended RecoveryPct – shape 3: log-normal")]
     for k, (name, title) in enumerate(names):
-        if k == 2 and cfg.get("client_cohort") is None:
+        if k == 2 and not has_logn:
             continue
         _triangle(wb, f, name, title + " (observed to the last credible bucket, then scale × shape)",
                   res.ext[k], n, cols, f["tri"])

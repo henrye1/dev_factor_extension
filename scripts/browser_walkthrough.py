@@ -35,14 +35,14 @@ def main(base: str, email: str, password: str, out: str) -> int:
             page.screenshot(path=str(shots / f"{name}.png"), full_page=full)
 
         page.goto(base)
-        page.get_by_label("Email").fill(email)
-        page.get_by_label("Password").fill(password)
+        page.get_by_label("Email", exact=True).fill(email)
+        page.get_by_label("Password", exact=True).fill(password)
         shot("01_signin")
         page.get_by_role("button", name="Sign in").click()
         page.get_by_role("heading", name="Projects").wait_for()
 
         page.get_by_role("button", name="New project").click()
-        page.get_by_label("Name").fill(f"Nutun July 2026 ({time.strftime('%H%M%S')})")
+        page.get_by_label("Name", exact=True).fill(f"Nutun July 2026 ({time.strftime('%H%M%S')})")
         page.get_by_role("button", name="Create project").click()
         page.get_by_role("heading", name="Zips").wait_for()
 
@@ -54,18 +54,20 @@ def main(base: str, email: str, password: str, out: str) -> int:
 
         # scenario 1: workbook defaults with a longer horizon
         page.get_by_role("button", name="New scenario").click()
-        page.get_by_label("Name").fill("Client shape 360")
+        page.get_by_label("Name", exact=True).fill("Log-normal 360")
         page.get_by_role("button", name="Create scenario").click()
-        page.get_by_label("Target TermStep").wait_for()
-        page.get_by_label("Target TermStep").fill("360")
-        page.get_by_label("MaxBucket").fill("480")
+        page.get_by_label("Target TermStep", exact=True).wait_for()
+        page.get_by_label("Target TermStep", exact=True).fill("360")
+        page.get_by_label("MaxBucket", exact=True).fill("480")
+        page.locator("select#p_method").select_option("3")
         page.get_by_role("button", name="Save changes").click()
         page.get_by_text("Scenario saved").wait_for()
         page.wait_for_timeout(600)
-        # the ALL zip has no curve of its own: give it the exponential shape
+        # give the ALL zip the last 10 years of vintages
         page.locator("tr", has_text="VBALL").get_by_role("button", name="Edit override").click()
-        page.get_by_label("Override Method").check()
-        page.locator("dialog select#p_method_o").select_option("1")
+        page.get_by_label("Override Vintages").check()
+        page.locator("dialog select#p_vintages_o").select_option("years")
+        page.locator("dialog").get_by_label("Number of years", exact=True).fill("10")
         shot("03_override_dialog", full=False)
         page.get_by_role("button", name="Save override").click()
         page.get_by_text("Override saved").wait_for()
@@ -77,13 +79,15 @@ def main(base: str, email: str, password: str, out: str) -> int:
         # scenario 2: a copy using the exponential shape and a percentage credibility cut
         page.locator(".crumbs a").nth(1).click()
         page.get_by_role("heading", name="Scenarios").wait_for()
-        page.locator("tr", has_text="Client shape 360").get_by_role("button", name="Copy").click()
-        page.get_by_label("Name of the copy").fill("Exponential, 0.5% cut")
+        page.locator("tr", has_text="Log-normal 360").get_by_role("button", name="Copy").click()
+        page.get_by_label("Name of the copy", exact=True).fill("Exponential, 0.5% cut")
         page.get_by_role("button", name="Copy scenario").click()
         page.get_by_label("Method").wait_for()
         page.locator("select#p_method").select_option("1")
         page.locator("select#p_min_exposure_mode").select_option("pct")
-        page.get_by_label("MinExposure (credibility cut)").fill("0.5")
+        page.get_by_label("MinExposure (credibility cut)", exact=True).fill("0.5")
+        page.locator("select#p_vintages").select_option("years")
+        page.get_by_label("Number of years", exact=True).fill("10")
         page.get_by_role("button", name="Save and run all zips").click()
         page.get_by_text("7 of 7 zips run").wait_for(timeout=120_000)
 
@@ -114,6 +118,7 @@ def main(base: str, email: str, password: str, out: str) -> int:
 
         page.locator(".crumbs a").nth(1).click()
         page.get_by_role("link", name="Members and curves").click()
+        page.get_by_role("heading", name="Compare the client's curves with our fitted tails").wait_for()
         page.locator(".chart svg path").first.wait_for()
         shot("10_settings")
 

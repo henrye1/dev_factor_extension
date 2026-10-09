@@ -2,7 +2,7 @@
 
 import { api } from "./api.js";
 import { h, clear, toast, reportError, openDialog, confirmDialog, field, fmt, dataTable } from "./ui.js";
-import { METHODS } from "./params.js";
+import { METHODS, vintageText } from "./params.js";
 import { applyFilters, compareBlock, filterBar, loadView, saveView } from "./compare.js";
 import { assistantEnabled, assistantPanel } from "./assistant.js";
 
@@ -38,6 +38,8 @@ export async function projectView(pid, ctx) {
         h("div", { class: "lgd" }, fmt.lgd(sm.lgd_selected)),
         h("div", { class: "delta" }, `from ${fmt.lgd(sm.lgd_file)}, uplift ${fmt.signed(sm.uplift)}`),
         h("div", { class: "delta" }, sm.method_label, c.has_override ? ", overridden" : ""));
+      if (sm.vintage_filter) td.append(h("span", { class: "vint", title: "This run used a vintage filter" }, "vintages " + sm.vintages));
+      if (c.legacy) td.append(h("div", null, h("span", { class: "chip stale", title: "Computed with the removed reference-curve method" }, "Run again")));
       td.addEventListener("click", () => { location.hash = `#/p/${pid}/zip/${d.id}/${s.id}`; });
       td.tabIndex = 0;
       td.addEventListener("keydown", (ev) => { if (ev.key === "Enter") location.hash = `#/p/${pid}/zip/${d.id}/${s.id}`; });
@@ -105,7 +107,8 @@ export async function projectView(pid, ctx) {
   const uploads = h("ul", { class: "uploads" });
   const input = h("input", { type: "file", accept: ".zip", multiple: true });
   const drop = h("div", { class: "drop", tabindex: "0", role: "button" },
-    "Drop debug zips here, or click to choose. Several at once is fine. Only lgd_recovery.csv and debug.json are read.", input);
+    "Drop debug zips here, or click to choose. Several at once is fine. lgd_recovery.csv, runoff_triangle.csv and debug.json are read. " +
+    "Dropping a zip that is already in the project without vintage data updates it in place.", input);
   const send = async (files) => {
     const list = [...files].filter((f) => f.name.toLowerCase().endsWith(".zip"));
     if (!list.length) return toast("Choose .zip files", true);
@@ -120,8 +123,9 @@ export async function projectView(pid, ctx) {
       try {
         const [out] = await api.upload(`/projects/${pid}/datasets`, form);
         li.className = out.ok ? "good" : "bad";
+        const vint = out.ok && out.dataset.profile.vintage_filter ? `, vintages ${out.dataset.profile.cohort_first} to ${out.dataset.profile.cohort_last}` : out.ok && !out.dataset.profile.has_runoff ? ", no runoff data in the zip" : out.ok ? ", vintage filter unavailable: " + out.dataset.profile.vintage_reason : "";
         li.lastChild.textContent = out.ok
-          ? `Added as ${out.dataset.name}: TermStep 1–${out.dataset.profile.max_ts}, rate ${fmt.pct(out.dataset.profile.implied_rate)}`
+          ? `${out.updated ? "Updated with vintage data" : "Added as " + out.dataset.name}: TermStep 1–${out.dataset.profile.max_ts}, rate ${fmt.pct(out.dataset.profile.implied_rate)}${vint}`
           : out.error;
         any = any || out.ok;
       } catch (err) {
@@ -146,7 +150,7 @@ export async function projectView(pid, ctx) {
     openDialog({
       title: `Edit ${d.name}`,
       body: h("div", null, field("Name", name),
-        field("Category", cat, "Decides which reference curve the zip uses when the scenario leaves the reference curve empty.")),
+        field("Category", cat, "Matches the zip to the client's applied curve of the same label on the comparison charts.")),
       actions: [{ label: "Cancel" }, { label: "Save changes", kind: "primary",
         run: async () => { await api.patch(`/projects/${pid}/datasets/${d.id}`, { name: name.value, category: cat.value }); toast("Saved"); refresh(); } }],
     });
@@ -162,6 +166,8 @@ export async function projectView(pid, ctx) {
     { label: "Rate in file", key: "profile", num: true, fmt: (p) => fmt.pct(p.implied_rate) },
     { label: "Opening exposure", key: "profile", num: true, fmt: (p) => fmt.moneyShort(p.opening_exposure) },
     { label: "LGD window", key: "parameters", fmt: (p) => (p.LgdMinDate ? `${p.LgdMinDate} to ${p.LgdMaxDate}` : "–") },
+    { label: "Vintages", key: "profile", fmt: (p) => p.vintage_filter ? `${p.cohort_first} to ${p.cohort_last} (${p.cohort_count})`
+        : h("span", { class: "muted", title: p.has_runoff ? p.vintage_reason : "" }, p.has_runoff ? "Filter unavailable" : "Re-upload the zip to enable the vintage filter") },
     ...(canEdit ? [{ label: "", key: "id", fmt: (_, d) => h("div", { class: "actions" },
         h("button", { type: "button", onclick: () => editZip(d) }, "Edit"),
         h("button", { type: "button", class: "danger", onclick: () => deleteZip(d) }, "Delete")) }] : []),
@@ -174,7 +180,7 @@ export async function projectView(pid, ctx) {
     openDialog({
       title: "New scenario",
       body: h("div", null, field("Name", name), field("Description", desc, "Optional."),
-        h("p", { class: "muted small" }, "It starts with method 1 (exponential) and the workbook defaults: Target TermStep 300, MaxBucket 420, MinExposure R100m. You set the parameters on the next page.")),
+        h("p", { class: "muted small" }, "It starts with method 1 (exponential), all vintages and the workbook defaults: Target TermStep 300, MaxBucket 420, MinExposure R100m. You set the parameters on the next page.")),
       actions: [{ label: "Cancel" }, { label: "Create scenario", kind: "primary",
         run: async () => {
           const s = await api.post(`/projects/${pid}/scenarios`, { name: name.value, description: desc.value });
@@ -206,6 +212,7 @@ export async function projectView(pid, ctx) {
     { label: "Scenario", key: "name", fmt: (v, s) => h("div", null, h("a", { href: `#/p/${pid}/scenario/${s.id}` }, v),
         s.description ? h("div", { class: "small muted" }, s.description) : null) },
     { label: "Method", key: "params", fmt: (p) => METHODS[p.method] },
+    { label: "Vintages", key: "params", fmt: (p) => vintageText(p) },
     { label: "Target / MaxBucket", key: "params", num: true, fmt: (p) => `${p.target_ts} / ${p.max_bucket}` },
     { label: "MinExposure", key: "params", num: true, fmt: (p) => (p.min_exposure_mode === "pct" ? `${p.min_exposure}% of opening` : fmt.moneyShort(p.min_exposure)) },
     { label: "Overrides", key: "overrides", num: true, fmt: (o) => Object.keys(o).length || "–" },
@@ -228,6 +235,8 @@ export async function projectView(pid, ctx) {
     after: drawCompare,
     trail: [{ label: "Projects", href: "#/projects" }, { label: project.name }],
     node: h("div", null,
+      project.legacy_method3 ? h("p", { class: "notice" }, "The reference-curve method has been replaced by the log-normal method; " +
+        `scenarios that used it now run log-normal and need running again (${project.legacy_method3} result${project.legacy_method3 === 1 ? "" : "s"}).`) : null,
       h("div", { class: "pagehead" },
         h("div", null, h("h1", null, project.name), project.description ? h("div", { class: "sub" }, project.description) : null),
         h("div", { class: "actions" },

@@ -33,7 +33,8 @@ def _project_state(db: Session, pid: int) -> dict:
         select(Result).join(Scenario, Scenario.id == Result.scenario_id).where(Scenario.project_id == pid)).scalars()}
     return {
         "zips": [{"name": d.name, "id": d.id, "category": d.category, "observed_termsteps": d.profile.get("max_ts"),
-                  "rate_in_file": d.profile.get("implied_rate")} for d in datasets],
+                  "rate_in_file": d.profile.get("implied_rate"), "vintage_filter_available": bool(d.profile.get("vintage_filter")),
+                  "first_vintage": d.profile.get("cohort_first"), "last_vintage": d.profile.get("cohort_last")} for d in datasets],
         "scenarios": [{"name": s.name, "id": s.id, "description": s.description, "params": s.params,
                        "overrides": {by_id[o.dataset_id].name: o.params for o in s.overrides if o.dataset_id in by_id}}
                       for s in scenarios],
@@ -64,8 +65,9 @@ def _result_reader(db: Session, pid: int):
                 rows.append({"termstep": t, "lgd_final": L["lgd_final"][i], "lgd_file": L["lgd_file"][i],
                              "source": L["source"][i], "lgd_within_valuation_horizon": L["lgd_valuation_horizon"][i]})
         return {"scenario": scenario, "zip": zip_name, "out_of_date": r.stale, "averages": pay["averages"],
-                "config": {k: pay["config"].get(k) for k in ("rate", "lam", "gam", "half_life", "last_ts", "target_ts",
-                                                           "max_bucket", "method_label", "client_cohort")},
+                "config": {k: pay["config"].get(k) for k in ("rate", "lam", "gam", "mu", "sigma", "half_life", "last_ts",
+                                                           "target_ts", "max_bucket", "method_label", "vintage_filter",
+                                                           "vintage_start_effective", "cohorts_included", "cohorts_total")},
                 "warnings": pay["warnings"], "rows": rows, "effective_params": r.effective_params}
     return read
 

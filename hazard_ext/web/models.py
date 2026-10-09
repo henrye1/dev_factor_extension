@@ -89,15 +89,16 @@ class Dataset(Base):
     overrides: Mapped[list["ScenarioOverride"]] = relationship(cascade="all, delete-orphan", back_populates="dataset")
 
 
-CURVE_KINDS = ("shape", "applied")     # shape: used by method 3; applied: the client's curve, comparison only
+CURVE_KINDS = ("shape", "applied")     # shape: retired (the old reference-curve method); applied: comparison only
 CURVE_BASES = ("face", "outstanding")   # what the monthly rates are a share of
 
 
 class ClientCurve(Base):
     """A curve uploaded to a project.
 
-    kind "shape": a reference curve, the method 3 tail shape for zips whose curve label matches.
-    kind "applied": the client's applied recovery curve, drawn on the charts for comparison.
+    kind "applied": the client's applied recovery curve, drawn on the charts for comparison only.
+    kind "shape": rows from the removed reference-curve method. They are kept, hidden and unused;
+    new uploads of that kind are refused.
     """
     __tablename__ = "client_curves"
     __table_args__ = (UniqueConstraint("project_id", "label", "kind", name="uq_curve_project_label_kind"),)
@@ -151,7 +152,7 @@ class Result(Base):
     error: Mapped[str] = mapped_column(Text, default="")
     stale: Mapped[bool] = mapped_column(Boolean, default=False)
     effective_params: Mapped[dict] = mapped_column(Json, default=dict)
-    curve_label: Mapped[str] = mapped_column(String(100), default="")
+    curve_label: Mapped[str] = mapped_column(String(100), default="")     # always "" since 9 Oct 2026; kept for old rows
     summary: Mapped[dict] = mapped_column(Json, default=dict)
     payload: Mapped[dict] = mapped_column(Json, default=dict)
     computed_by: Mapped[int] = mapped_column(ForeignKey(User.id))

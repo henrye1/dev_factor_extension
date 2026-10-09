@@ -11,7 +11,7 @@ from hazard_ext.engine.core import EngineError, compute
 from hazard_ext.engine.params import Params
 from hazard_ext.engine.parse import COLUMNS, from_raw_frame
 
-from .conftest import load_zip, prototype_curves
+from .conftest import load_zip
 
 
 def _random_params(rng: random.Random, n: int) -> dict:
@@ -28,6 +28,9 @@ def _random_params(rng: random.Random, n: int) -> dict:
         "horizon2": rng.choice([1, 120, 2000]),
         "lambda_override": rng.choice([None, None, 0.0, -0.5, 0.05, 50.0]),
         "gamma_override": rng.choice([None, None, 0.0, -2.0, 1.5, 100.0]),
+        "mu_override": rng.choice([None, None, 0.0, 3.0, 20.0]),
+        "sigma_override": rng.choice([None, None, 1e-6, 0.7, 20.0]),
+        **rng.choice([{}, {}, {"vintage_years": rng.choice([1, 3, 10])}, {"vintage_start": rng.choice(["2019-06", "2024-01"])}]),
         "floor": rng.choice([0, 0, 1e-6, 0.5]),
         "base_ts": rng.choice([1, 2, n // 2, n]),
         "last_ts": rng.choice([None, 0, 1, n // 2, n, 1999]),
@@ -41,9 +44,8 @@ def test_random_parameters_never_crash(seed):
     data = load_zip("44")
     n = data.triangles("Lifetime").n
     kwargs = _random_params(rng, n)
-    curve = rng.choice([prototype_curves()["44"], None, np.zeros(3), prototype_curves()["11"][:50]])
     try:
-        res = compute(data, Params(**kwargs), curve)
+        res = compute(data, Params(**kwargs))
     except EngineError:
         return
     j = res.to_json()                                   # serialisable, no nan left in it
@@ -60,7 +62,6 @@ def _frame(rows):
 
 @pytest.mark.parametrize("method", [1, 2, 3])
 def test_tiny_and_degenerate_files(method):
-    curve = prototype_curves()["44"]
     one = from_raw_frame(_frame([["Lifetime", 1, 0, 100.0, 1, 100.0, 90.0, 0.1, 1, 0.98, 0.098, 0.098, 0.902]]))
     zero_exposure = from_raw_frame(_frame([
         ["Lifetime", 1, 0, 0.0, 1, 0.0, 0.0, 0.0, 1, 0.98, 0.0, 0.0, 1.0],
@@ -69,7 +70,7 @@ def test_tiny_and_degenerate_files(method):
     ]))
     for data in (one, zero_exposure):
         try:
-            res = compute(data, Params(method=method, target_ts=10, max_bucket=20), curve)
+            res = compute(data, Params(method=method, target_ts=10, max_bucket=20))
         except EngineError:
             continue
         res.to_json()

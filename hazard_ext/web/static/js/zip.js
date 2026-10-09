@@ -3,7 +3,7 @@
 import { api } from "./api.js";
 import { h, clear, toast, reportError, fmt, dataTable, tabs, columnsToRows, blank, openDialog } from "./ui.js";
 import { lineChart, COLORS } from "./chart.js";
-import { describe, FIELDS, paramForm } from "./params.js";
+import { FIELDS, fieldSet, fieldText, paramForm } from "./params.js";
 import { helpButton } from "./help.js";
 import { compareBlock } from "./compare.js";
 import { assistantEnabled, assistantPanel } from "./assistant.js";
@@ -11,12 +11,12 @@ import { assistantEnabled, assistantPanel } from "./assistant.js";
 const SHAPES = [
   { key: "lgd_exp", name: "Exponential", color: COLORS.exp, method: 1 },
   { key: "lgd_power", name: "Power law", color: COLORS.power, method: 2 },
-  { key: "lgd_client", name: "Reference curve shape", color: COLORS.client, method: 3 },
+  { key: "lgd_logn", name: "Log-normal", color: COLORS.logn, method: 3 },
 ];
 
 function rail(avg, method) {
   // Where each tail shape puts the exposure-weighted LGD, against the file's own figure.
-  const marks = [{ name: "Original (file)", v: avg.lgd_file, color: COLORS.file }];
+  const marks = [{ name: "Original", v: avg.lgd_file, color: COLORS.file }];
   for (const s of SHAPES) if (avg[s.key] !== null) marks.push({ name: s.name, v: avg[s.key], color: s.color, selected: s.method === method });
   const vals = marks.map((m) => m.v);
   let lo = Math.min(...vals), hi = Math.max(...vals);
@@ -132,7 +132,6 @@ export async function zipView(pid, did, sid, ctx) {
   const override = sdetail.overrides[String(did)] || {};
   const effective = { ...sdetail.params, ...override };
   const formCtx = {
-    curves: project.curves.map((c) => c.label),
     eventTypes: [...new Set(project.datasets.flatMap((d) => d.profile.event_types || []))],
   };
   if (!formCtx.eventTypes.length) formCtx.eventTypes = ["Lifetime", "LifetimeSingle", "TwelveMonthSingle"];
@@ -184,11 +183,12 @@ export async function zipView(pid, did, sid, ctx) {
           : `All values follow ${scenario.name}. Select ? on any assumption for an explanation.`),
         canEdit ? h("button", { type: "button", onclick: editAssumptions }, "Edit assumptions") : null)),
     h("div", { class: "assume" }, FIELDS.map((f) => {
-      const text = describe(f.name, effective[f.name]);
+      const text = fieldText(f, effective);
       const i = text.indexOf(": ");
+      const own = fieldSet(f, override);
       return h("div", null,
         h("span", { class: "k" }, text.slice(0, i), helpButton(f.name)),
-        h("span", { class: "v" + (f.name in override ? " ovr" : ""), title: f.name in override ? "This zip has its own value" : "" }, text.slice(i + 2)));
+        h("span", { class: "v" + (own ? " ovr" : ""), title: own ? "This zip has its own value" : "" }, text.slice(i + 2)));
     })));
 
   if (!result) {
@@ -203,11 +203,22 @@ export async function zipView(pid, did, sid, ctx) {
 
   const pay = result.payload, avg = pay.averages, cfg = pay.config, prm = result.effective_params;
   const R = pay.results, L = pay.lgd_ts;
-  const hasClient = avg.lgd_client !== null;
+  if (result.legacy) {
+    // computed before the reference-curve method was replaced by log-normal: its figures are not current
+    return { trail, node: h("div", null, head,
+      h("p", { class: "notice" }, "This result was computed with the reference-curve method, which has been replaced by the log-normal method. Run the scenario again to see current figures."),
+      assumptions) };
+  }
+  const hasLogn = avg.lgd_logn !== null && avg.lgd_logn !== undefined;
+  const fileLabel = cfg.lgd_file_label || "Original LGD (file)";
+  const vintageLine = cfg.vintage_filter
+    ? `Vintages: ${cfg.vintage_start_effective} to ${cfg.vintage_last} (${cfg.cohorts_included} of ${cfg.cohorts_total}, ${Math.round(cfg.exposure_share * 100)}% of exposure)`
+    : cfg.vintage_first ? `All vintages (${cfg.vintage_first} to ${cfg.vintage_last}, ${cfg.cohorts_total} cohorts)` : "All vintages";
+  head.querySelector(".sub").append(h("div", null, vintageLine));
 
   // ---------------------------------------------------------------- notices
   const notices = h("div");
-  if (result.stale) notices.append(h("p", { class: "notice" }, "The scenario, an override or a reference curve changed after this run. The figures below are from the earlier inputs. Run again to refresh them and to export to Excel."));
+  if (result.stale) notices.append(h("p", { class: "notice" }, "The scenario, an override or the zip's data changed after this run. The figures below are from the earlier inputs. Run again to refresh them and to export to Excel."));
   for (const w of pay.warnings) notices.append(h("p", { class: "notice" }, w));
 
   // --------------------------------------------------------------- headline
@@ -222,8 +233,9 @@ export async function zipView(pid, did, sid, ctx) {
       ["λ", `${fmt.num(cfg.lam, 4)}${prm.lambda_override !== null ? " (override)" : ""}`],
       ["Half-life", cfg.half_life === null ? blank : `${cfg.half_life.toFixed(1)} buckets`],
       ["γ", `${fmt.num(cfg.gam, 2)}${prm.gamma_override !== null ? " (override)" : ""}`],
+      ["Log-normal μ, σ", hasLogn ? `${fmt.num(cfg.mu, 3)}${prm.mu_override !== null ? " (override)" : ""}, ${fmt.num(cfg.sigma, 3)}${prm.sigma_override !== null ? " (override)" : ""}` : "undefined"],
+      ["Log-normal peak bucket", cfg.logn_mode === null || cfg.logn_mode === undefined ? blank : cfg.logn_mode.toFixed(1)],
       ["Credibility cut", fmt.moneyShort(cfg.min_exposure_abs)],
-      ["Reference curve", hasClient ? cfg.client_cohort : "none"],
       ["Tie-out to file", tie < 1e-9 ? "0.0000" : tie.toExponential(1)],
       ["Own rows to TermStep", String(cfg.last_ts)],
     ]));
@@ -240,14 +252,14 @@ export async function zipView(pid, did, sid, ctx) {
     const appliedLgd = applied.available
       ? [{ name: `Client applied (${applied.label}), implied LGD`, color: APPLIED, dash: true, pts: pts(applied.ts, applied.lgd) }] : [];
     lineChart(cA, {
-      title: "LGD by TermStep: file against each tail shape",
+      title: cfg.vintage_filter ? "LGD by TermStep: vintage subset against each tail shape" : "LGD by TermStep: file against each tail shape",
       subtitle: "The gap to the dashed line is what truncation of the triangle was costing.",
       xLabel: "TermStep",
       series: [
-        { name: "Original (file)", color: COLORS.file, dash: true, pts: pts(ts, R.lgd_file) },
+        { name: fileLabel, color: COLORS.file, dash: true, pts: pts(ts, R.lgd_file) },
         { name: "Exponential", color: COLORS.exp, pts: pts(ts, R.lgd_exp) },
         { name: "Power law", color: COLORS.power, pts: pts(ts, R.lgd_power) },
-        ...(hasClient ? [{ name: "Reference curve shape", color: COLORS.client, pts: pts(ts, R.lgd_client) }] : []),
+        ...(hasLogn ? [{ name: "Log-normal", color: COLORS.logn, pts: pts(ts, R.lgd_logn) }] : []),
         ...(applied.available ? [{ name: `Client applied (${applied.label}), implied LGD`, color: APPLIED, dash: true,
           pts: pts(ts, applied.lgd.slice(0, ts.length)) }] : []),
       ],
@@ -264,7 +276,7 @@ export async function zipView(pid, did, sid, ctx) {
       xLabel: "TermStep",
       refs: [{ x: cfg.last_ts, label: "LastTS" }],
       series: [
-        { name: "Original (file)", color: COLORS.file, dash: true, pts: pts(T, L.lgd_file) },
+        { name: fileLabel, color: COLORS.file, dash: true, pts: pts(T, L.lgd_file) },
         { name: "Derived from base row", color: SHAPES[cfg.method - 1].color, pts: pts(T, L.derived_selected) },
         { name: "Final", color: COLORS.final, width: 2.5, pts: pts(T, L.lgd_final) },
         ...appliedLgd,
@@ -302,8 +314,7 @@ export async function zipView(pid, did, sid, ctx) {
           { name: "Observed", color: COLORS.final, dots: true, pts: pts(c.bucket, c.observed) },
           { name: "Exponential", color: COLORS.exp, pts: pts(c.bucket, c.exp) },
           { name: "Power law", color: COLORS.power, pts: pts(c.bucket, c.power) },
-          ...(hasClient ? [{ name: "Reference curve shape", color: COLORS.client, pts: pts(c.bucket, c.client) }] : []),
-          ...(hasClient && c.ts === 1 ? [{ name: "Reference curve (as supplied)", color: COLORS.file, dash: true, pts: pts(c.bucket, c.client_curve) }] : []),
+          ...(hasLogn ? [{ name: "Log-normal", color: COLORS.logn, pts: pts(c.bucket, c.logn) }] : []),
           ...(c.applied ? [{ name: `Client applied (${c.applied_label})`, color: APPLIED, dash: true, pts: pts(c.bucket, c.applied) }] : []),
         ],
       });
@@ -335,11 +346,11 @@ export async function zipView(pid, did, sid, ctx) {
   const resultsTable = () => dataTable([
     { label: "TermStep", key: "ts", num: true },
     { label: "Exposure at ts (R)", key: "exposure", num: true, fmt: fmt.money },
-    lgdCol("Original LGD (file)", "lgd_file"),
+    lgdCol(fileLabel, "lgd_file"),
     lgdCol("Replica LGD", "lgd_replica"),
     { label: "Tie-out", key: "tie_out", num: true, fmt: fmt.sci },
     { label: "File LGD floor", key: "file_floor_gap", num: true, fmt: (v) => (v === null ? blank : v > 1e-12 ? v.toFixed(6) : "0") },
-    lgdCol("LGD exponential", "lgd_exp"), lgdCol("LGD power", "lgd_power"), lgdCol("LGD reference curve shape", "lgd_client"),
+    lgdCol("LGD exponential", "lgd_exp"), lgdCol("LGD power", "lgd_power"), lgdCol("LGD log-normal", "lgd_logn"),
     { label: "LGD selected", key: "lgd_selected", num: true, fmt: fmt.lgd, cls: "sel" },
     lgdCol("Uplift in recoveries", "uplift"),
     lgdCol(`LGD within ${prm.horizon} months`, "lgd_horizon"),
@@ -347,15 +358,15 @@ export async function zipView(pid, did, sid, ctx) {
     { label: "Last credible bucket", key: "last_cred", num: true },
     { label: "Buckets added", key: "buckets_added", num: true },
   ], columnsToRows(R));
-  const dsel = ["derived_exp", "derived_power", "derived_client"][cfg.method - 1];
+  const dsel = ["derived_exp", "derived_power", "derived_logn"][cfg.method - 1];
   const dCol = (label, key) => ({ label, key, num: true, fmt: fmt.lgd, cls: key === dsel ? "sel" : "" });
   const lgdTable = () => dataTable([
     { label: "TermStep", key: "ts", num: true },
     { label: "Source", key: "source" },
     { label: "LGD final", key: "lgd_final", num: true, fmt: fmt.lgd, cls: "sel" },
-    lgdCol("Original LGD (file)", "lgd_file"),
+    lgdCol(fileLabel, "lgd_file"),
     lgdCol("Own-row LGD", "lgd_own"),
-    dCol("Derived, exponential", "derived_exp"), dCol("Derived, power", "derived_power"), dCol("Derived, reference curve shape", "derived_client"),
+    dCol("Derived, exponential", "derived_exp"), dCol("Derived, power", "derived_power"), dCol("Derived, log-normal", "derived_logn"),
     lgdCol("Validation (own − derived)", "validation"),
     lgdCol("Balance factor", "balance_factor"),
     lgdCol(`LGD within ${prm.horizon2} months`, "lgd_valuation_horizon"),
@@ -374,7 +385,7 @@ export async function zipView(pid, did, sid, ctx) {
     { label: "Σ observed over window", key: "sum_obs", num: true, fmt: six },
     { label: "Scale, exponential", key: "scale_exp", num: true, fmt: six },
     { label: "Scale, power", key: "scale_power", num: true, fmt: six },
-    { label: "Scale, reference curve", key: "scale_client", num: true, fmt: six },
+    { label: "Scale, log-normal", key: "scale_logn", num: true, fmt: six },
   ], columnsToRows(pay.tail_fit));
   const s = pay.lgd_ts_summary;
   const tables = h("section", { class: "block" },
@@ -413,7 +424,7 @@ export async function zipView(pid, did, sid, ctx) {
 
 function paramTable(params) {
   const rows = FIELDS.map((f) => {
-    const text = describe(f.name, params[f.name]);
+    const text = fieldText(f, params);
     const i = text.indexOf(": ");
     return { label: text.slice(0, i), value: text.slice(i + 2), hint: f.hint };
   });
