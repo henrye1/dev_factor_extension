@@ -82,7 +82,7 @@ def main(base: str, email: str, password: str, out: str) -> int:
         page.locator("tr", has_text="Log-normal 360").get_by_role("button", name="Copy").click()
         page.get_by_label("Name of the copy", exact=True).fill("Exponential, 0.5% cut")
         page.get_by_role("button", name="Copy scenario").click()
-        page.get_by_label("Method").wait_for()
+        page.get_by_label("Method", exact=True).wait_for()
         page.locator("select#p_method").select_option("1")
         page.locator("select#p_min_exposure_mode").select_option("pct")
         page.get_by_label("MinExposure (credibility cut)", exact=True).fill("0.5")
