@@ -49,7 +49,8 @@ def test_synthetic_lognormal_row_is_recovered_exactly():
 def test_row_that_is_not_concave_in_ln_b_leaves_lognormal_undefined():
     # ln R + ln b is convex in ln b here, so the quadratic coefficient a2 is not negative
     b = np.arange(1, 80, dtype=float)
-    r = 1e-4 * np.exp(0.02 * (np.log(b) ** 2))
+    # R decays in b (so λ and γ fit), but ln R + ln b is convex in ln b: the quadratic coefficient is not negative
+    r = 1e-2 * b ** -1.5 * np.exp(0.05 * np.log(b) ** 2)
     rows = [["Lifetime", 1, 0, 1e9, int(bb), 0.0, 0.0, r[i], i + 1, 0.99 ** (i + 1), r[i] * 0.99 ** (i + 1), 0.0, 1.0]
             for i, bb in enumerate(b)]
     data = from_raw_frame(pd.DataFrame(rows, columns=COLUMNS))
@@ -198,3 +199,20 @@ def test_self_check_failure_disables_the_filter_but_keeps_the_data(zip44):
     compute(data, Params())
     with pytest.raises(EngineError, match="does not reproduce"):
         compute(data, Params(vintage_years=5))
+
+
+def test_rising_fitted_decay_is_undefined_not_a_forecast():
+    # two rising points: the regression slopes upward, so lambda and gamma come out negative
+    rows = [["Lifetime", 1, 0, 1e9, b, 0.0, 0.0, r, b, 0.99 ** b, r * 0.99 ** b, 0.0, 1.0]
+            for b, r in ((1, 0.05), (2, 0.04), (3, 0.03), (4, 0.02), (5, 0.03), (6, 0.05))]
+    data = from_raw_frame(pd.DataFrame(rows, columns=COLUMNS))
+    res = compute(data, Params(method=3, fit_start=5, min_exposure=0, target_ts=5, max_bucket=60, mu_override=2.0, sigma_override=1.0))
+    assert res.config["lam_fit"] < 0 and np.isnan(res.config["lam"]) and np.isnan(res.config["gam"])
+    assert np.isnan(res.results["lgd_exp"]).all() and np.isnan(res.results["lgd_power"]).all()
+    assert sum("rises instead of decaying" in w for w in res.warnings) == 2
+    for method in (1, 2):
+        with pytest.raises(EngineError, match="undefined"):
+            compute(data, Params(method=method, fit_start=5, min_exposure=0, target_ts=5, max_bucket=60))
+    # an override is the user's choice and still runs
+    r = compute(data, Params(method=1, fit_start=5, min_exposure=0, target_ts=5, max_bucket=60, lambda_override=-0.01))
+    assert r.config["lam"] == -0.01 and np.isfinite(r.results["lgd_exp"]).all()

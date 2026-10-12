@@ -261,6 +261,20 @@ def _compute(data: RecoveryData, params: Params) -> ExtensionResult:
             f"last credible bucket {ref_last_cred}; the fitted λ, γ and the log-normal μ / σ are unreliable")
     lam = lam_fit if p.lambda_override is None else float(p.lambda_override)
     gam = gam_fit if p.gamma_override is None else float(p.gamma_override)
+    # A fitted decay that is not a decay (the regression slopes upward, usually from a handful of
+    # points on a short triangle) would make recoveries grow without limit. It is undefined, not
+    # a forecast; an override is the user's own choice and is left alone.
+    for name, fitted, over in (("λ", lam_fit, p.lambda_override), ("γ", gam_fit, p.gamma_override)):
+        if over is None and math.isfinite(fitted) and fitted <= 0:
+            warnings.append(
+                f"The fitted {name} is {fitted:.4f}: the regression on the reference row rises instead of decaying "
+                f"over FitStart {p.fit_start} to bucket {ref_last_cred} ({fx.size} points), so the "
+                f"{'exponential' if name == 'λ' else 'power-law'} tail is undefined. Lower FitStart, use more "
+                f"vintages, set an override, or choose another method")
+    if p.lambda_override is None and math.isfinite(lam) and lam <= 0:
+        lam = float("nan")
+    if p.gamma_override is None and math.isfinite(gam) and gam <= 0:
+        gam = float("nan")
     ln = _logn_fit(fx, fy, p.mu_override, p.sigma_override)
     mu, sigma = ln["mu"], ln["sigma"]
     if ln["problem"] == "not_concave":
