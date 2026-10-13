@@ -4,9 +4,10 @@
 import { h } from "./ui.js";
 import { helpButton } from "./help.js";
 
-export const METHODS = { 1: "1 – Exponential", 2: "2 – Power law", 3: "3 – Reference curve shape" };
+export const METHODS = { 1: "1 – Exponential", 2: "2 – Power law", 3: "3 – Log-normal" };
 
-// kind: int | float | select | text ; blank: the field may be left empty
+// kind: int | float | select | text | vintage ; blank: the field may be left empty
+// A "vintage" field is one control that writes two parameters (vintage_years, vintage_start).
 export const FIELDS = [
   { group: "Horizon", name: "target_ts", label: "Target TermStep", kind: "int",
     hint: "The LGD table runs from TermStep 1 to this." },
@@ -20,9 +21,6 @@ export const FIELDS = [
   { group: "Tail", name: "method", label: "Method", kind: "select",
     options: () => Object.entries(METHODS).map(([v, l]) => [Number(v), l]),
     hint: "The shape used for the selected LGD. All three are always computed." },
-  { group: "Tail", name: "client_cohort", label: "Reference curve", kind: "select", blank: true,
-    options: (ctx) => [["", "The zip's own category"], ...ctx.curves.map((c) => [c, c])],
-    hint: "The curve method 3 scales its tail to; also drawn on the comparison chart." },
   { group: "Tail", name: "min_exposure_mode", label: "MinExposure basis", kind: "select",
     options: () => [["abs", "Rand amount"], ["pct", "% of TermStep 1 opening exposure"]],
     hint: "How the credibility cut below is stated." },
@@ -33,7 +31,7 @@ export const FIELDS = [
   { group: "Tail", name: "floor", label: "Hazard floor (per bucket)", kind: "float",
     hint: "Minimum RecoveryPct on the extended tail." },
 
-  { group: "Decay fit", name: "ref_ts", label: "Reference TermStep for λ / γ", kind: "int",
+  { group: "Decay fit", name: "ref_ts", label: "Reference TermStep for the fit", kind: "int",
     hint: "The row whose tail is fitted. 1 is the longest." },
   { group: "Decay fit", name: "fit_start", label: "FitStart bucket", kind: "int",
     hint: "Start of the regression window. Skips the early hump." },
@@ -41,22 +39,38 @@ export const FIELDS = [
     hint: "Leave empty to use the fitted value." },
   { group: "Decay fit", name: "gamma_override", label: "γ override", kind: "float", blank: true,
     hint: "Leave empty to use the fitted value." },
+  { group: "Decay fit", name: "mu_override", label: "Log-normal μ override", kind: "float", blank: true,
+    hint: "Location on ln b. Leave empty to use the fitted value." },
+  { group: "Decay fit", name: "sigma_override", label: "Log-normal σ override", kind: "float", blank: true,
+    hint: "Spread on ln b, above 0. Leave empty to use the fitted value." },
 
   { group: "Derived LGD", name: "base_ts", label: "Base TermStep", kind: "int",
     hint: "The row rolled forward for TermSteps beyond LastTS." },
   { group: "Derived LGD", name: "last_ts", label: "LastTS (last own row used)", kind: "int", blank: true,
     hint: "Leave empty for the last observed TermStep. Lower it to derive thin late rows." },
 
-  { group: "Source", name: "event_type", label: "EventType", kind: "select",
+  { group: "Data", name: "vintages", label: "Vintages", kind: "vintage", blank: true,
+    params: ["vintage_years", "vintage_start"],
+    hint: "Which default vintages feed the triangle: all of them, the last N years of each zip's own vintages, or vintages from a month. Needs the zip's runoff data." },
+  { group: "Data", name: "event_type", label: "EventType", kind: "select",
     options: (ctx) => ctx.eventTypes.map((e) => [e, e]),
     hint: "Which block of lgd_recovery is used." },
-  { group: "Source", name: "rate", label: "Discount rate p.a.", kind: "float", blank: true,
+  { group: "Data", name: "rate", label: "Discount rate p.a.", kind: "float", blank: true,
     hint: "As a fraction, for example 0.1771. Leave empty to use the rate implied by each file." },
 ];
 
+const LABELS = { vintage_years: "Vintages, last N years", vintage_start: "Vintages from" };
+
+// "Vintages: last 10 years" / "Vintages: from 2016-08" / "Vintages: all"
+export function vintageText(params) {
+  if (params.vintage_years !== null && params.vintage_years !== undefined) return `last ${params.vintage_years} years`;
+  if (params.vintage_start) return `from ${params.vintage_start}`;
+  return "all";
+}
+
 export function describe(name, value) {
   const f = FIELDS.find((x) => x.name === name);
-  const label = f ? f.label : name;
+  const label = f ? f.label : LABELS[name] || name;
   let text = value === null || value === "" ? "empty" : String(value);
   if (typeof value === "number" && Math.abs(value) >= 1000) text = value.toLocaleString("en-US");
   if (name === "method") text = METHODS[value] || text;
@@ -64,7 +78,60 @@ export function describe(name, value) {
   return `${label}: ${text}`;
 }
 
+// The text for one form field given a full parameter object (handles the compound vintage field).
+export function fieldText(f, params) {
+  if (f.kind === "vintage") return `${f.label}: ${vintageText(params)}`;
+  return describe(f.name, params[f.name]);
+}
+
+// Whether a parameter object (an override) sets a field.
+export function fieldSet(f, params) {
+  const keys = f.params || [f.name];
+  return keys.some((k) => Object.prototype.hasOwnProperty.call(params, k));
+}
+
+function setDisabled(el, flag) {
+  el.disabled = flag;
+  for (const c of el.querySelectorAll ? el.querySelectorAll("select,input") : []) c.disabled = flag;
+}
+
+function vintageControl(value) {
+  const mode = h("select", null,
+    h("option", { value: "all" }, "All vintages"),
+    h("option", { value: "years" }, "Last N years of each zip's vintages"),
+    h("option", { value: "date" }, "From a month"));
+  const years = h("input", { type: "number", step: "1", min: "1", max: "50", placeholder: "years", "aria-label": "Number of years" });
+  const start = h("input", { type: "month", "aria-label": "First vintage month" });
+  const show = () => {
+    years.hidden = mode.value !== "years";
+    start.hidden = mode.value !== "date";
+  };
+  mode.addEventListener("change", show);
+  const wrap = h("div", { class: "vintage" }, mode, years, start);
+  wrap.set = (p) => {
+    if (p.vintage_years !== null && p.vintage_years !== undefined) { mode.value = "years"; years.value = String(p.vintage_years); start.value = ""; }
+    else if (p.vintage_start) { mode.value = "date"; start.value = p.vintage_start; years.value = ""; }
+    else { mode.value = "all"; years.value = ""; start.value = ""; }
+    show();
+  };
+  wrap.read = () => {
+    if (mode.value === "years") {
+      const n = Number(years.value);
+      if (!Number.isInteger(n) || n < 1 || n > 50) throw new Error("Vintages: the number of years must be a whole number from 1 to 50");
+      return { vintage_years: n, vintage_start: null };
+    }
+    if (mode.value === "date") {
+      if (!/^\d{4}-\d{2}$/.test(start.value)) throw new Error("Vintages: choose the first month to include");
+      return { vintage_years: null, vintage_start: start.value };
+    }
+    return { vintage_years: null, vintage_start: null };
+  };
+  wrap.set(value || {});
+  return wrap;
+}
+
 function control(f, value, ctx) {
+  if (f.kind === "vintage") return vintageControl(value);
   if (f.kind === "select") {
     const sel = h("select");
     const opts = f.options(ctx);
@@ -81,6 +148,7 @@ function control(f, value, ctx) {
 }
 
 function read(f, el) {
+  if (f.kind === "vintage") return el.read();
   const raw = el.value.trim();
   if (raw === "") {
     if (f.blank) return null;
@@ -111,23 +179,26 @@ export function paramForm(base, ctx, { override = null, readOnly = false } = {})
     if (f.group !== group) {
       group = f.group;
       grid = h("div", { class: "params" });
-      root.append(h("h3", { style: null }, group), grid, h("div", { class: "small" }, " "));
+      root.append(h("h3", { style: null }, group), grid, h("div", { class: "small" }, " "));
     }
-    const isOverridden = override !== null && Object.prototype.hasOwnProperty.call(override, f.name);
-    const value = isOverridden ? override[f.name] : base[f.name];
+    const isOverridden = override !== null && fieldSet(f, override);
+    const value = f.kind === "vintage" ? (isOverridden ? override : base) : (isOverridden ? override[f.name] : base[f.name]);
     const el = control(f, value, ctx);
-    el.disabled = readOnly || (override !== null && !isOverridden);
+    setDisabled(el, readOnly || (override !== null && !isOverridden));
     controls.set(f.name, el);
     const id = "p_" + f.name + (override !== null ? "_o" : "");
-    el.id = id;
+    if (f.kind === "vintage") el.firstChild.id = id; else el.id = id;
     let labelNode;
     if (override !== null) {
       const tick = h("input", { type: "checkbox", checked: isOverridden, disabled: readOnly, "aria-label": `Override ${f.label}` });
       tick.addEventListener("change", () => {
-        el.disabled = !tick.checked;
+        setDisabled(el, !tick.checked);
         if (!tick.checked) {
-          const b = base[f.name];
-          el.value = b === null || b === undefined ? "" : String(b);
+          if (f.kind === "vintage") el.set(base);
+          else {
+            const b = base[f.name];
+            el.value = b === null || b === undefined ? "" : String(b);
+          }
         }
       });
       ticks.set(f.name, tick);
@@ -144,7 +215,8 @@ export function paramForm(base, ctx, { override = null, readOnly = false } = {})
       const out = {};
       for (const f of FIELDS) {
         if (override !== null && !ticks.get(f.name).checked) continue;
-        out[f.name] = read(f, controls.get(f.name));
+        const v = read(f, controls.get(f.name));
+        if (f.kind === "vintage") Object.assign(out, v); else out[f.name] = v;
       }
       return out;
     },

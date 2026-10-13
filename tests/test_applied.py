@@ -7,7 +7,7 @@ from hazard_ext.engine.applied import implied_lgd, rate_at, to_face
 from hazard_ext.engine.core import compute
 from hazard_ext.engine.params import Params
 
-from .conftest import load_zip, prototype_curves
+from .conftest import load_zip
 
 
 def test_face_basis_is_unchanged():
@@ -37,10 +37,10 @@ def test_implied_lgd_matches_the_engine_derivation():
     # The engine's derived LGD beyond LastTS rolls the base row forward in exactly this way, so
     # feeding the base row's extended curve back in must reproduce the derived column.
     data = load_zip("44")
-    res = compute(data, Params(target_ts=200, max_bucket=300, last_ts=0), prototype_curves()["44"])
-    c = res.base_curves[2, 1:301]                     # client-shape extended cash curve of row 1
+    res = compute(data, Params(method=3, target_ts=200, max_bucket=300, last_ts=0))
+    c = res.base_curves[2, 1:301]                     # log-normal extended cash curve of row 1
     lgd = implied_lgd(c, res.config["v"], 300, 200)
-    np.testing.assert_allclose(lgd, res.lgd_ts["derived_client"], atol=1e-12)
+    np.testing.assert_allclose(lgd, res.lgd_ts["derived_logn"], atol=1e-12)
 
 
 def test_outstanding_basis_round_trip():

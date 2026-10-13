@@ -1,4 +1,4 @@
-// Project settings: details, members, reference and applied curves.
+// Project settings: details, members and the client's applied curves.
 
 import { api } from "./api.js";
 import { h, clear, toast, reportError, confirmDialog, field, dataTable } from "./ui.js";
@@ -49,31 +49,8 @@ export async function settingsView(pid, ctx) {
     ...(isOwner ? [{ label: "", key: "user_id", fmt: (_, m) => h("button", { type: "button", class: "danger", onclick: () => removeMember(m) }, "Remove") }] : []),
   ], members, { plain: true });
 
-  // ----------------------------------------------------------------- curves
-  const file = h("input", { type: "file", accept: ".csv,.xlsx" });
-  const uploadCurve = async () => {
-    if (!file.files.length) return toast("Choose a .csv or .xlsx file first", true);
-    const form = new FormData();
-    form.append("file", file.files[0]);
-    try { await api.upload(`/projects/${pid}/curves`, form); toast("Curves uploaded. Results are marked out of date."); refresh(); }
-    catch (err) { reportError(err); }
-  };
-  const removeCurve = (c) => confirmDialog(`Remove the uploaded curve ${c.label}?`,
-    "Zips that use it will fail on method 3 until another curve is chosen.",
-    "Remove curve", async () => { await api.del(`/projects/${pid}/curves/${c.id}`); toast("Curve removed"); refresh(); });
-  const chartHost = h("div");
-  const shapeCurves = project.curves.filter((c) => c.kind !== "applied");
-  const appliedCurves = project.curves.filter((c) => c.kind === "applied");
-  const curveTable = dataTable([
-    { label: "Label", key: "label" },
-    { label: "Source", key: "source", fmt: (v, c) => `Uploaded (${c.source_filename})` },
-    { label: "Months", key: "length", num: true },
-    { label: "Last non-zero month", key: "last_nonzero_t", num: true },
-    { label: "Total recovery on face", key: "total", num: true, fmt: (v) => (v * 100).toFixed(1) + "%" },
-    ...(canEdit ? [{ label: "", key: "id", fmt: (id, c) => (id ? h("button", { type: "button", class: "danger", onclick: () => removeCurve(c) }, "Remove") : "") }] : []),
-  ], shapeCurves, { plain: true });
-
   // ------------------------------------------------- client applied curves
+  const appliedCurves = project.curves.filter((c) => c.kind === "applied");
   const appliedFile = h("input", { type: "file", accept: ".csv,.xlsx" });
   const basisSel = h("select", null,
     h("option", { value: "face" }, "Share of the balance at default (face value)"),
@@ -112,14 +89,6 @@ export async function settingsView(pid, ctx) {
           series: all.map((c, i) => ({ name: c.label, color: COLORS.scenario[i], pts: c.values.map((v, t) => [t + 1, v]) })),
         });
       }
-      const shown = shapeCurves.slice(0, COLORS.scenario.length);
-      const all = await Promise.all(shown.map((c) => api.get(`/projects/${pid}/curves/${encodeURIComponent(c.label)}`)));
-      lineChart(chartHost, {
-        title: "Reference curves: monthly recovery as a share of the balance at default",
-        subtitle: "Log scale. Shape 3 extends each zip's tail in proportion to its curve.",
-        xLabel: "Month on book", yLog: true,
-        series: all.map((c, i) => ({ name: c.label, color: COLORS.scenario[i], pts: c.values.map((v, t) => [t + 1, v]) })),
-      });
     } catch (err) { reportError(err); }
   };
 
@@ -149,7 +118,7 @@ export async function settingsView(pid, ctx) {
       const S = c.series;
       const name = (k, label) => label + (k === c.selected ? " (selected)" : "");
       lineChart(cmpHost, {
-        title: `TermStep ${ts}: the client's applied curve against our fitted tails`,
+        title: `TermStep ${ts}: the client's applied curve against our fitted tails` + (c.vintages ? ` (vintages from ${c.vintages})` : ""),
         subtitle: (out ? "Each step's cash as a share of what is still outstanding at the start of that step. "
                        : "Each step's cash as a share of the balance at the TermStep. ") +
           (c.applied_label ? `Client curve ${c.applied_label}, uploaded on the ${c.applied_basis === "outstanding" ? "outstanding" : "face value"} basis.`
@@ -160,8 +129,7 @@ export async function settingsView(pid, ctx) {
           { name: "Observed", color: COLORS.final, dots: true, pts: pts(S.observed) },
           { name: name("exp", "Exponential"), color: COLORS.exp, pts: pts(S.exp) },
           { name: name("power", "Power law"), color: COLORS.power, pts: pts(S.power) },
-          ...(S.reference ? [{ name: name("reference", "Reference curve shape"), color: COLORS.client, pts: pts(S.reference) }] : []),
-          ...(S.reference_curve ? [{ name: `Reference curve ${c.reference_label} (as supplied)`, color: COLORS.file, dash: true, pts: pts(S.reference_curve) }] : []),
+          ...(S.logn ? [{ name: name("logn", "Log-normal"), color: COLORS.logn, pts: pts(S.logn) }] : []),
           ...(S.applied ? [{ name: `Client applied (${c.applied_label})`, color: "#4a3aa7", dash: true, width: 2.5, pts: pts(S.applied) }] : []),
         ],
       });
@@ -173,7 +141,17 @@ export async function settingsView(pid, ctx) {
           { label: `Ours (${c.method_label})`, key: "ours", num: true, fmt: (v) => fmtPct(v) },
           { label: "Client applied", key: "client", num: true, fmt: (v) => fmtPct(v) },
           { label: "Difference", key: "difference", num: true, fmt: (v) => (v === null ? "–" : (v >= 0 ? "+" : "−") + (Math.abs(v) * 100).toFixed(2) + "%") },
-        ], c.cumulative, { plain: true }));
+        ], c.cumulative, { plain: true }),
+        h("p", { class: "muted small" }, `The parameters behind our three curves at TermStep ${ts}. Beyond the last credible bucket, ` +
+          "RecoveryPct(ts, b) = max(floor, scale × s(b))."),
+        dataTable([
+          { label: "Shape", key: "label", fmt: (v, r) => v + (r.selected ? " (selected)" : "") },
+          { label: "Formula", key: "formula" },
+          { label: "Parameters used (fitted)", key: "params", fmt: (ps) => ps.map((p) => p.used === null ? `${p.name} undefined`
+              : `${p.name} = ${p.used.toFixed(4)}${p.override ? ` (override, fitted ${p.fitted === null ? "–" : p.fitted.toFixed(4)})` : ""}`).join("; ") },
+          { label: "Fit window", key: "fit_window", fmt: (w) => `TermStep ${w.ref_ts}, buckets ${w.from} to ${w.to}, ${w.points} points` },
+          { label: `Scale at TermStep ${ts}`, key: "scale_ts", num: true, fmt: (v) => (v === null ? "–" : v.toPrecision(6)) },
+        ], c.curve_params, { plain: true, rowClass: (r) => (r.selected ? "selectedrow" : "") }));
     } catch (err) {
       if (err.status === 404) {
         clear(cmpHost).classList.add("chart");
@@ -202,11 +180,15 @@ export async function settingsView(pid, ctx) {
   const setLink = () => { dlLink.href = `/api/projects/${pid}/export/curves?scenario_id=${dlScn.value}`; };
   dlScn.addEventListener("change", setLink);
   if (project.scenarios.length) setLink();
-  dlLink.addEventListener("click", () => toast("Building the curves workbook for every cohort. This takes up to half a minute."));
+  dlLink.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    if (!project.scenarios.length) return;
+    api.download(dlLink.href, "Building the curves workbook for every cohort. This takes up to half a minute…").catch(reportError);
+  });
   const downloads = project.scenarios.length ? h("section", { class: "block" },
     h("header", null, h("h2", null, "Download curves")),
     h("p", { class: "muted" }, "One workbook per scenario: final LGD by TermStep for every cohort, each cohort's marginal recovery " +
-      "curve on the face-value and outstanding-balance bases next to its reference curve and the client's applied curve, " +
+      "curve on the face-value and outstanding-balance bases next to the client's applied curve, " +
       "cumulative recovery, and a sheet per cohort of marginal recoveries by TermStep for the first 120 remaining steps."),
     h("div", { class: "actions" }, h("span", { class: "muted small" }, "Scenario"), dlScn, dlLink)) : null;
 
@@ -217,24 +199,15 @@ export async function settingsView(pid, ctx) {
       h("div", { class: "pagehead" }, h("div", null, h("h1", null, "Members and curves"),
         h("div", { class: "sub" }, `${project.name}. Your role: ${project.role}.`))),
       h("section", { class: "block" },
-        h("header", null, h("h2", null, "Reference curves (method 3 tail shape)")),
-        h("p", { class: "muted" }, "Method 3 scales each zip's tail to the reference curve whose label equals the zip's category, unless the scenario " +
-          "or the zip's override names another. There are no built-in curves: upload the client's curves here before running method 3. " +
-          "A zip with no curve of its own label, such as ALL, needs one named in an override, an uploaded curve with that label, or method 1 or 2."),
-        curveTable, h("div", { class: "small" }, " "), chartHost,
-        canEdit ? h("div", null, h("div", { class: "small" }, " "),
-          h("div", { class: "row" },
-            field("Upload reference curves", file, "A .csv or .xlsx. First column t = 1, 2, 3 and so on; then one column per curve, headed with its label. A label that is already uploaded is replaced."),
-            h("button", { type: "button", onclick: uploadCurve }, "Upload reference curves"))) : null),
-      h("section", { class: "block" },
         h("header", null, h("h2", null, "Client applied recovery curves")),
         h("p", { class: "muted" }, "The curves the client actually applies, for comparison only. Each zip is matched to the curve whose " +
           "label equals its category, and the results charts show it as a dashed line: the monthly rate rolled forward to each " +
-          "TermStep, and the LGD it implies at the file's discount rate. Uploading or removing one never changes a result."),
+          "TermStep, and the LGD it implies at the file's discount rate. Uploading or removing one never changes a result. " +
+          "The three tail methods (exponential, power law, log-normal) are fitted to each zip's own data and take no curve."),
         appliedTable, h("div", { class: "small" }, "\u00a0"), appliedChart,
         canEdit ? h("div", null, h("div", { class: "small" }, "\u00a0"),
           h("div", { class: "row" },
-            field("Upload applied curves", appliedFile, "Same layout as the reference curves: first column t = 1, 2, 3 and so on, then one column per cohort label (11, 15, 22, 23, 25, 44, ALL)."),
+            field("Upload applied curves", appliedFile, "A .csv or .xlsx: first column t = 1, 2, 3 and so on, then one column per cohort label (11, 15, 22, 23, 25, 44, ALL). A label that is already uploaded is replaced."),
             field("The monthly rates are a", basisSel, "Face value: each month's cash as a share of the balance at default. Outstanding: a share of what is still owed at the start of that month."),
             h("button", { type: "button", onclick: uploadApplied }, "Upload applied curves"))) : null),
       comparison,

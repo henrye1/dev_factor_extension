@@ -246,6 +246,6 @@ export function lineChart(host, spec) {
 
 // Fixed colours by entity. The three tail shapes take the first three categorical slots.
 export const COLORS = {
-  file: "#7b869c", exp: "#2a78d6", power: "#eb6834", client: "#1baf7a", final: "#14213d",
+  file: "#7b869c", exp: "#2a78d6", power: "#eb6834", logn: "#1baf7a", final: "#14213d",
   scenario: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"],
 };

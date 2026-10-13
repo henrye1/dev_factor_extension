@@ -2,7 +2,7 @@
 
 import { api } from "./api.js";
 import { h, toast, reportError, openDialog, field, dataTable } from "./ui.js";
-import { paramForm, describe } from "./params.js";
+import { paramForm, describe, vintageText } from "./params.js";
 import { statusChip } from "./project.js";
 
 export async function scenarioView(pid, sid, ctx) {
@@ -11,7 +11,6 @@ export async function scenarioView(pid, sid, ctx) {
   const canEdit = project.role !== "viewer";
   const eventTypes = [...new Set(project.datasets.flatMap((d) => d.profile.event_types || []))];
   const formCtx = {
-    curves: project.curves.map((c) => c.label),
     eventTypes: eventTypes.length ? eventTypes : ["Lifetime", "LifetimeSingle", "TwelveMonthSingle"],
   };
   const cells = new Map(matrix.cells.filter((c) => c.scenario_id === sid).map((c) => [c.dataset_id, c]));
@@ -82,7 +81,10 @@ export async function scenarioView(pid, sid, ctx) {
     { label: "Own values for this zip", key: "id", fmt: (id) => {
         const o = scenario.overrides[String(id)];
         if (!o || !Object.keys(o).length) return h("span", { class: "muted" }, "Follows the scenario");
-        return h("div", { class: "ovr" }, Object.entries(o).map(([k, v]) => h("span", { class: "kv" }, describe(k, v))));
+        // the two vintage keys are one choice, shown as one chip
+        const chips = Object.entries(o).filter(([k]) => k !== "vintage_years" && k !== "vintage_start").map(([k, v]) => describe(k, v));
+        if ("vintage_years" in o || "vintage_start" in o) chips.push(`Vintages: ${vintageText(o)}`);
+        return h("div", { class: "ovr" }, chips.map((t) => h("span", { class: "kv" }, t)));
       } },
     { label: "Last run", key: "id", fmt: (id) => {
         const c = cells.get(id) || { status: "none" };

@@ -65,27 +65,51 @@ Which database it uses depends on `.env`:
 | MaxBucket | 420 | Buckets are extended to this index |
 | Valuation horizon | 120 | LGD is also given within this many months |
 | Short horizon | 12 | The 12-month basis |
-| Method | 3 | 1 exponential, 2 power law, 3 reference curve shape |
-| Reference curve | empty | Empty = the zip's own category |
+| Method | 1 | 1 exponential, 2 power law, 3 log-normal |
 | MinExposure | R100m | Credibility cut, as Rand or as % of TermStep 1 opening exposure |
 | Window W | 12 | Last W credible buckets set the tail level |
 | Hazard floor | 0 | Minimum RecoveryPct on the tail |
 | Reference TermStep | 1 | Row whose tail is fitted for λ and γ |
 | FitStart | 24 | Start of the regression window |
 | λ, γ override | empty | Empty = fitted |
+| Log-normal μ, σ override | empty | Empty = fitted; with one given, the other is still fitted |
 | Base TermStep | 1 | Row rolled forward beyond LastTS |
 | LastTS | empty | Empty = last observed TermStep |
 | EventType | Lifetime | Block of `lgd_recovery` used |
 | Discount rate | empty | Empty = the rate implied by each file |
+| Vintages | all | Last N years of each zip's own vintages, or vintages from a month (YYYY-MM) |
 
-### Reference curves (method 3)
+### The three tail methods
 
-Method 3 scales each zip's tail to a reference curve. There are no built-in curves: each project
-uploads its client's curves under *Members and curves*, so one client's curves never reach another
-client's project. A zip uses the curve whose label equals its category. A zip with no curve of its
-label (ALL, for one) needs a reference curve named in an override, an uploaded curve with that
-label, or method 1 or 2. Upload a `.csv` or `.xlsx` whose first column is `t` = 1, 2, 3 … and
-whose other columns are headed with curve labels. New scenarios start on method 1.
+All three shapes are fitted to the zip's own data on the same points (the reference TermStep row
+from FitStart to its last credible bucket) and scaled on the same anchor window. Nothing is taken
+from the client.
+
+| Method | Shape | Fitted parameters | Solver |
+|---|---|---|---|
+| 1 | Exponential e^(−λb) | λ | least squares of ln R on b |
+| 2 | Power law b^(−γ) | γ | least squares of ln R on ln b |
+| 3 | Log-normal (1/b)·exp(−(ln b − μ)²/(2σ²)) | μ, σ | least squares of ln R + ln b on ln b and (ln b)² |
+
+The log-normal has the functional form of the client's industry curves, so its fitted μ and σ can
+be compared with the client's parameters. It replaced the earlier "reference curve shape" on
+9 October 2026: scenarios saved on the old method 3 keep the number, now mean log-normal, and are
+flagged to run again. Where the fit is undefined (the tail is not concave in ln b, or fewer than
+three points remain) the log-normal columns are blank and a run on method 3 fails with a clear
+message. In the formula workbook the fit is written with SLOPE and INTERCEPT helper rows on
+`Tail_Fit`, so it recalculates without array formulas.
+
+### Vintage windows
+
+Each zip's `runoff_triangle.csv` holds the exposure of every default vintage (CohortDate) by month
+since default. The app reads it on upload, rebuilds the recovery triangle from it and checks that
+the rebuilt triangle reproduces `lgd_recovery.csv` to within rounding; only zips that pass can be
+filtered. A scenario (or a zip's override) can then choose which vintages feed the triangle: the
+last N years counted back from each zip's own latest vintage, or every vintage from a month. With
+a filter the "Original" LGD is the LGD of the rebuilt subset, labelled "LGD (vintages from …)",
+the formula workbook's `Raw_Debug` holds the rebuilt rows, and the project page marks the cell.
+Zips uploaded before 9 October 2026 hold no runoff data: drop the same zip on the project again
+and it is updated in place, keeping its id, overrides and results (marked out of date).
 
 ### Client applied recovery curves
 
@@ -100,8 +124,8 @@ and never mark results out of date. The same page has a comparison section: pick
 and TermStep to see the observed data, our three fitted tails and the client's curve on one chart,
 on either the face-value or the outstanding-balance basis, with a cumulative recovery table.
 Below it, "Download curves" produces one workbook per scenario with final LGD by TermStep for
-every cohort, each cohort's marginal recovery curve on both bases next to its reference curve and
-the client's applied curve, cumulative recovery, and a sheet per cohort of marginal recoveries by
+every cohort, each cohort's marginal recovery curve on both bases next to the client's applied
+curve, cumulative recovery, and a sheet per cohort of marginal recoveries by
 TermStep for the first 120 remaining steps.
 
 ### The assistant
@@ -122,8 +146,9 @@ default (`AGENT_MODEL`); an instruction costs about a cent or two.
   LGD. Where that bites, the file's LGD is not `1 − CumulativeSumPV`. The app shows the file
   value as "Original LGD", reports the gap in its own column, and measures the tie-out
   against `1 − CumulativeSumPV`, which always ties to zero. The extended LGD is not floored.
-- **Warnings** when MaxBucket runs past the end of the reference curve, the Target is below the
-  observed range, the balance factor reaches zero, or the λ/γ regression has too few points.
+- **Warnings** when the Target is below the observed range, the balance factor reaches zero, the
+  decay regression has too few points or is not concave in ln b (log-normal undefined), and, with
+  a vintage filter, the window used and whether a Rand MinExposure cuts credibility early.
 
 ## Hosting: Supabase and a container host
 
@@ -231,25 +256,26 @@ London database takes one to two seconds; hosting the app in or near London remo
 ```powershell
 $py = "$env:USERPROFILE\.venvs\dev_factor_extension\Scripts\python.exe"
 & $py -m pip install -r requirements-dev.txt
-& $py -m pytest -q                      # 189 tests, about 35 seconds
+& $py -m pytest -q                      # 241 tests, about two minutes
 ```
 
 | Path | Purpose |
 |---|---|
-| `hazard_ext/engine/` | Zip parser, parameters, reference curves, the calculation (`core.py`). No web or database code |
+| `hazard_ext/engine/` | Zip parser with the runoff rebuild (`parse.py`), parameters, applied-curve helpers, the calculation (`core.py`). No web or database code |
 | `hazard_ext/export/` | Values workbook, formula workbook, CSV and summary |
 | `hazard_ext/web/` | FastAPI app: settings, models, security, storage, routers, static front end |
 | `migrations/001_init.sql` | Postgres schema, generated by `scripts/make_migration.py` |
 | `migrations/002_app_role.sql` | Rights and policies for the app's database role |
 | `migrations/003_applied_curves.sql` | Adds the kind and basis columns for applied curves (applied 3 October 2026) |
 | `migrations/004_agent_log.sql` | The assistant's log table (applied 3 October 2026) |
+| `migrations/005_three_methods.sql` | Optional: the one-off clean-up for the switch to log-normal; the app also does it at start-up |
 | `tests/golden/` | Inputs and expected outputs extracted from the two example workbooks |
 | `scripts/extract_golden.py` | Rebuilds the golden fixtures from the workbooks |
 | `scripts/excel_recalc.ps1`, `compare_recalc.py` | Recalculate a formula export in Excel and compare with the engine |
 | `scripts/browser_walkthrough.py` | Drives the running app in Edge through the whole flow with the seven zips |
 | `scripts/supabase_setup.py` | Sets up the linked Supabase project and writes `.env` |
 | `scripts/smoke_test.py` | Checks a running app end to end through its API, then cleans up |
-| `docs/superpowers/` | Design spec and implementation plan |
+| `docs/superpowers/` | Design specs (2 October: the app; 9 October: three methods and vintage windows) and the implementation plan |
 
 The formula workbook differs from the hand-built ones in two ways. `Hazard_Obs` reads
 `Raw_Debug` by position through a `Raw_Index` sheet instead of one `SUMIFS` per cell, which

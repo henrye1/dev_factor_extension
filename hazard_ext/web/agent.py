@@ -24,13 +24,17 @@ GLOSSARY = """Parameters of a scenario (the JSON key, then what people call it):
 - target_ts: "Target TermStep", "target", "LGD table length". The last TermStep in the LGD table.
 - max_bucket: "MaxBucket", "max bucket", "max step", "maximum bucket", "how far the tail runs". The last bucket every row is extended to.
 - horizon2: "valuation horizon" (months). horizon: "short horizon", "12-month horizon".
-- method: 1 = exponential, 2 = power law, 3 = reference curve shape ("reference curve", "client shape" in older notes).
-- client_cohort: "reference curve", "curve label". Empty = the zip's own category.
+- method: 1 = exponential, 2 = power law, 3 = log-normal ("lognormal", "the client's curve form"). The old
+  reference-curve shape no longer exists; method 3 now means log-normal.
 - min_exposure_mode: "abs" (Rand) or "pct" (% of TermStep 1 opening exposure). min_exposure: "MinExposure", "credibility cut".
 - window: "window", "W", "anchor window" (buckets). fit_start: "FitStart". ref_ts: "reference TermStep for lambda/gamma".
-- lambda_override / gamma_override: numbers or null for fitted. floor: "hazard floor".
+- lambda_override / gamma_override: numbers or null for fitted. mu_override / sigma_override: the log-normal μ and σ
+  (on ln b), numbers or null for fitted. floor: "hazard floor".
 - base_ts: "base TermStep", "base row". last_ts: "LastTS", "last own row", null = last observed TermStep.
 - event_type: "EventType". rate: "discount rate" as a fraction (0.1771 = 17.71%), null = implied by the file.
+- vintage_years: "last N years of vintages", "vintages from the last 10 years" (an integer); vintage_start: "vintages
+  from 2016-08", a month as "YYYY-MM". Set one or the other, never both; null = all vintages. A zip needs vintage
+  data (vintage_filter_available in get_state); otherwise say the zip must be uploaded again.
 Zips are also called cohorts or categories; a zip's category is its label (11, 15, 22, 23, 25, 44, ALL).
 """
 

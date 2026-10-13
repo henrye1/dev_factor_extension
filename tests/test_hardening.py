@@ -18,7 +18,7 @@ from hazard_ext.export.values_xlsx import build_values_workbook
 from hazard_ext.web.config import Settings
 from hazard_ext.web.main import create_app
 
-from .conftest import load_zip, prototype_curves
+from .conftest import load_zip
 
 HEADER = ",".join(COLUMNS)
 H = {"X-Requested-With": "hazard-ext"}
@@ -66,19 +66,15 @@ def test_debug_json_must_be_an_object():
 def test_names_that_look_like_formulas_stay_text_in_every_workbook():
     evil = '=HYPERLINK("http://example.com","x")'
     data = load_zip("44")
-    res = compute(data, Params(target_ts=120, max_bucket=240), prototype_curves()["44"])
+    res = compute(data, Params(method=3, target_ts=120, max_bucket=240))
 
     wb = openpyxl.load_workbook(io.BytesIO(build_values_workbook(res, evil, evil, evil)))
     assert wb["Charts"]["A1"].data_type == "s" and wb["Charts"]["A1"].value.startswith("=HYPERLINK")
     assert wb["Summary"]["A2"].data_type == "s"
 
-    curves = dict(prototype_curves())
-    curves["=1+1"] = curves["44"]
-    wb = openpyxl.load_workbook(io.BytesIO(build_formula_workbook(res, data, evil, evil, curves)))
+    wb = openpyxl.load_workbook(io.BytesIO(build_formula_workbook(res, data, evil, evil)))
     assert wb["Charts"]["A1"].data_type == "s"
     assert wb["README"]["B1"].data_type == "s"
-    headers = [c for c in wb["Ref_Curve"][3] if c.value == "=1+1"]
-    assert headers and headers[0].data_type == "s"
 
     matrix = {"datasets": [{"id": 1, "name": evil, "category": evil}], "scenarios": [{"id": 1, "name": evil}],
               "cells": [{"dataset_id": 1, "scenario_id": 1, "status": "error", "error": evil, "summary": {}}]}
