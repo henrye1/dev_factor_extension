@@ -25,7 +25,10 @@ def make_engine(settings: Settings) -> Engine:
             cur.close()
 
         return engine.execution_options(schema_translate_map={SCHEMA: None})
-    engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
+    # Supabase's session-mode pooler allows 15 clients for the database user in total, shared by
+    # every running copy of the app (this PC and Render). 3 + 2 per copy keeps two copies inside
+    # that limit; a busy moment queues for a connection instead of opening a 16th.
+    engine = create_engine(url, pool_pre_ping=True, pool_size=3, max_overflow=2, pool_timeout=30)
     if settings.db_schema != SCHEMA:
         engine = engine.execution_options(schema_translate_map={SCHEMA: settings.db_schema})
     return engine

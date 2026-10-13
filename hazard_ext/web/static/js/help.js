@@ -144,7 +144,7 @@ export const PARAM_HELP = {
     effect: "A later row has fewer buckets and less exposure, so the fit is noisier. Change it only when TermStep 1 is not representative.",
   },
   fit_solver: {
-    title: "Fit solver",
+    title: "Fit solver (how λ, γ, μ, σ are fitted)",
     what: "How λ, γ, μ and σ are fitted on the regression window. Levenberg–Marquardt minimises the weighted squared error on the recovery scale, each bucket weighted by its bucket number so later buckets count more, which is how the client fits its curves. Log-linear least squares regresses the logs (Excel SLOPE), which is how the hand-built workbooks fit them.",
     def: "Levenberg–Marquardt. Scenarios saved before 13 October 2026 were stamped with the log-linear solver so their results did not move.",
     effect: "Only the fitted parameters change; the level of every row is still set on its own anchor window. The formula workbook carries Levenberg–Marquardt parameters as values, because an iterative fit cannot be a live formula; everything downstream stays live.",
