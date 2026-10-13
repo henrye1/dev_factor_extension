@@ -1,7 +1,7 @@
 // Project home: the scenario-by-zip matrix, the zips and the scenarios.
 
 import { api } from "./api.js";
-import { h, clear, toast, reportError, openDialog, confirmDialog, field, fmt, dataTable } from "./ui.js";
+import { h, clear, toast, reportError, openDialog, confirmDialog, field, fmt, dataTable, tieOutCell, tieOutText } from "./ui.js";
 import { METHODS, vintageText } from "./params.js";
 import { applyFilters, compareBlock, filterBar, loadView, saveView } from "./compare.js";
 import { assistantEnabled, assistantPanel } from "./assistant.js";
@@ -124,8 +124,9 @@ export async function projectView(pid, ctx) {
         const [out] = await api.upload(`/projects/${pid}/datasets`, form);
         li.className = out.ok ? "good" : "bad";
         const vint = out.ok && out.dataset.profile.vintage_filter ? `, vintages ${out.dataset.profile.cohort_first} to ${out.dataset.profile.cohort_last}` : out.ok && !out.dataset.profile.has_runoff ? ", no runoff data in the zip" : out.ok ? ", vintage filter unavailable: " + out.dataset.profile.vintage_reason : "";
+        const tie = out.ok && tieOutText(out.dataset.profile.tie_out) ? `, ${tieOutText(out.dataset.profile.tie_out).text}` : "";
         li.lastChild.textContent = out.ok
-          ? `${out.updated ? "Updated with vintage data" : "Added as " + out.dataset.name}: TermStep 1–${out.dataset.profile.max_ts}, rate ${fmt.pct(out.dataset.profile.implied_rate)}${vint}`
+          ? `${out.updated ? "Updated in place" : "Added as " + out.dataset.name}: TermStep 1–${out.dataset.profile.max_ts}, rate ${fmt.pct(out.dataset.profile.implied_rate)}${tie}${vint}`
           : out.error;
         any = any || out.ok;
       } catch (err) {
@@ -164,6 +165,7 @@ export async function projectView(pid, ctx) {
     { label: "TermSteps", key: "profile", num: true, fmt: (p) => `1–${p.max_ts}` },
     { label: "Last observed bucket", key: "profile", num: true, fmt: (p) => p.last_obs_bucket },
     { label: "Rate in file", key: "profile", num: true, fmt: (p) => fmt.pct(p.implied_rate) },
+    { label: "LGD in file (TermStep 1)", key: "profile", num: true, fmt: (p) => tieOutCell(p.tie_out) },
     { label: "Opening exposure", key: "profile", num: true, fmt: (p) => fmt.moneyShort(p.opening_exposure) },
     { label: "LGD window", key: "parameters", fmt: (p) => (p.LgdMinDate ? `${p.LgdMinDate} to ${p.LgdMaxDate}` : "–") },
     { label: "Vintages", key: "profile", fmt: (p) => p.vintage_filter ? `${p.cohort_first} to ${p.cohort_last} (${p.cohort_count})`

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .fit import MAX_ITER, generic_starts, lm_fit_multi
 from .params import Params
 from .parse import RecoveryData, VintageError
 
@@ -158,6 +159,52 @@ def _logn_fit(fx: np.ndarray, fy: np.ndarray, mu_override, sigma_override) -> di
     return out
 
 
+SOLVER_LABELS = {"lm": "Levenberg–Marquardt, weighted by bucket", "ols": "Log-linear least squares"}
+_LM_GENERIC_START = {"exp": [0.05], "power": [2.0], "logn": [3.0, 1.0]}
+_LM_NAMES = {"exp": "λ", "power": "γ", "logn": "μ / σ"}
+
+
+def _lm_shape(shape: str, fx: np.ndarray, fr: np.ndarray, ols_start: list, overrides: list, info: dict):
+    """Fit one shape by weighted Levenberg–Marquardt. Returns (fitted, used, warning).
+
+    ``fitted`` is the full fit with every parameter free (nan when it fails); ``used`` is the
+    fit with any override held fixed, or the override itself when every parameter is given.
+    Both are scalars for exp / power and (μ, σ) tuples for logn.
+    """
+    k = len(ols_start)
+    start = [s if (s is not None and math.isfinite(s)) else g for s, g in zip(ols_start, _LM_GENERIC_START[shape])]
+    if shape == "logn" and not (start[1] > 0):
+        start[1] = _LM_GENERIC_START["logn"][1]
+    nan = float("nan")
+    warning = ""
+
+    def run(fixed_vals):
+        fixed = [fv is not None for fv in fixed_vals]
+        if all(fixed):
+            return [float(v) for v in fixed_vals], {"converged": True, "iterations": 0, "problem": "", "wsse": nan}
+        # the log-linear estimate first, then a fixed grid, so a poor start cannot strand the fit
+        starts = [start] + (generic_starts(shape, fx) if fx.size else [])
+        starts = [[fv if fv is not None else s for fv, s in zip(fixed_vals, st)] for st in starts]
+        res = lm_fit_multi(shape, fx, fr, starts, fixed)
+        return [float(v) for v in res["theta"]], res
+
+    full, res_full = run([None] * k)
+    used, res_used = run(list(overrides))
+    info[shape] = {"iterations": int(res_used["iterations"]), "converged": bool(res_used["converged"]),
+                   "wsse": float(res_used["wsse"]) if math.isfinite(res_used["wsse"]) else None,
+                   "problem": res_used["problem"]}
+    if res_used["problem"] or res_full["problem"]:
+        problem = res_used["problem"] or res_full["problem"]
+        why = {"too_few_points": f"fewer than {k + 1} positive points in the regression window",
+               "no_convergence": f"the fit did not converge in {MAX_ITER} iterations",
+               "bad_start": "the fit could not be started"}.get(problem, problem)
+        warning = (f"The weighted Levenberg–Marquardt fit of the {SHAPE_LABELS[shape]} shape is undefined: {why}. "
+                   f"Lower FitStart, set an override, or choose another method")
+    if k == 1:
+        return full[0], used[0], warning
+    return tuple(full), tuple(used), warning
+
+
 def _ranges(values) -> str:
     """Compact text for a sorted list of integers: 2-5, 9, 12-14."""
     vals = [int(x) for x in values]
@@ -265,23 +312,49 @@ def _compute(data: RecoveryData, params: Params) -> ExtensionResult:
     # points on a short triangle) would make recoveries grow without limit. It is undefined, not
     # a forecast; an override is the user's own choice and is left alone.
     for name, fitted, over in (("λ", lam_fit, p.lambda_override), ("γ", gam_fit, p.gamma_override)):
-        if over is None and math.isfinite(fitted) and fitted <= 0:
+        if p.fit_solver == "ols" and over is None and math.isfinite(fitted) and fitted <= 0:
             warnings.append(
                 f"The fitted {name} is {fitted:.4f}: the regression on the reference row rises instead of decaying "
                 f"over FitStart {p.fit_start} to bucket {ref_last_cred} ({fx.size} points), so the "
                 f"{'exponential' if name == 'λ' else 'power-law'} tail is undefined. Lower FitStart, use more "
                 f"vintages, set an override, or choose another method")
-    if p.lambda_override is None and math.isfinite(lam) and lam <= 0:
+    if p.fit_solver == "ols" and p.lambda_override is None and math.isfinite(lam) and lam <= 0:
         lam = float("nan")
-    if p.gamma_override is None and math.isfinite(gam) and gam <= 0:
+    if p.fit_solver == "ols" and p.gamma_override is None and math.isfinite(gam) and gam <= 0:
         gam = float("nan")
     ln = _logn_fit(fx, fy, p.mu_override, p.sigma_override)
     mu, sigma = ln["mu"], ln["sigma"]
-    if ln["problem"] == "not_concave":
+    if ln["problem"] == "not_concave" and p.fit_solver == "ols":
         warnings.append(
             "The log-normal shape cannot be fitted: ln RecoveryPct + ln b is not concave in ln b over the "
             "regression window (the quadratic coefficient is not negative), so μ and σ are undefined. "
             "Lower FitStart, set μ and σ overrides, or use another method")
+    fit_info: dict = {}
+    if p.fit_solver == "lm":
+        # Weighted Levenberg–Marquardt on the recovery scale, weights ∝ bucket number, as the
+        # client's curve fit. The log-linear estimates above are only the starting point; every
+        # fitted and used value is replaced by the LM result.
+        fr = fit_r[pos].astype(float)
+        lam_fit, lam, w1 = _lm_shape("exp", fx, fr, [lam_fit], [p.lambda_override], fit_info)
+        gam_fit, gam, w2 = _lm_shape("power", fx, fr, [gam_fit], [p.gamma_override], fit_info)
+        (mu_fit, sigma_fit), (mu, sigma), w3 = _lm_shape("logn", fx, fr, [ln["mu_fit"], ln["sigma_fit"]],
+                                                         [p.mu_override, p.sigma_override], fit_info)
+        ln = {**ln, "mu_fit": mu_fit, "sigma_fit": sigma_fit,
+              "points": int(fx.size) if math.isfinite(mu_fit) else 0}
+        lam_fit, gam_fit = float(lam_fit), float(gam_fit)
+        lam, gam = float(lam), float(gam)
+        warnings.extend(w for w in (w1, w2, w3) if w)
+        for name, fitted, over in (("λ", lam_fit, p.lambda_override), ("γ", gam_fit, p.gamma_override)):
+            if over is None and math.isfinite(fitted) and fitted <= 0:
+                warnings.append(
+                    f"The fitted {name} is {fitted:.4f}: the weighted fit on the reference row rises instead of "
+                    f"decaying over FitStart {p.fit_start} to bucket {ref_last_cred} ({fx.size} points), so the "
+                    f"{'exponential' if name == 'λ' else 'power-law'} tail is undefined. Lower FitStart, use more "
+                    f"vintages, set an override, or choose another method")
+        if p.lambda_override is None and math.isfinite(lam) and lam <= 0:
+            lam = float("nan")
+        if p.gamma_override is None and math.isfinite(gam) and gam <= 0:
+            gam = float("nan")
 
     # shapes by bucket 1..size-1
     bb = np.arange(size, dtype=float)
@@ -563,6 +636,9 @@ def _compute(data: RecoveryData, params: Params) -> ExtensionResult:
         "min_exposure_abs": float(min_exp),
         "opening_exposure": opening,
         "last_obs_file": tri.last_obs_file,
+        "fit_solver": p.fit_solver,
+        "fit_solver_label": SOLVER_LABELS[p.fit_solver],
+        "fit_info": fit_info,
         "lam_fit": lam_fit,
         "gam_fit": gam_fit,
         "lam": lam,

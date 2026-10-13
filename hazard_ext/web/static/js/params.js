@@ -5,6 +5,7 @@ import { h } from "./ui.js";
 import { helpButton } from "./help.js";
 
 export const METHODS = { 1: "1 – Exponential", 2: "2 – Power law", 3: "3 – Log-normal" };
+export const SOLVERS = { lm: "Levenberg–Marquardt, weighted by bucket (as the client)", ols: "Log-linear least squares (hand-built workbooks)" };
 
 // kind: int | float | select | text | vintage ; blank: the field may be left empty
 // A "vintage" field is one control that writes two parameters (vintage_years, vintage_start).
@@ -35,6 +36,9 @@ export const FIELDS = [
     hint: "The row whose tail is fitted. 1 is the longest." },
   { group: "Decay fit", name: "fit_start", label: "FitStart bucket", kind: "int",
     hint: "Start of the regression window. Skips the early hump." },
+  { group: "Decay fit", name: "fit_solver", label: "Fit solver", kind: "select",
+    options: () => Object.entries(SOLVERS),
+    hint: "How λ, γ, μ and σ are fitted. Levenberg–Marquardt matches the client's curve fit; log-linear reproduces the hand-built workbooks." },
   { group: "Decay fit", name: "lambda_override", label: "λ override", kind: "float", blank: true,
     hint: "Leave empty to use the fitted value." },
   { group: "Decay fit", name: "gamma_override", label: "γ override", kind: "float", blank: true,
@@ -74,6 +78,7 @@ export function describe(name, value) {
   let text = value === null || value === "" ? "empty" : String(value);
   if (typeof value === "number" && Math.abs(value) >= 1000) text = value.toLocaleString("en-US");
   if (name === "method") text = METHODS[value] || text;
+  if (name === "fit_solver") text = SOLVERS[value] || text;
   if (name === "min_exposure_mode") text = value === "pct" ? "% of opening" : "Rand";
   return `${label}: ${text}`;
 }

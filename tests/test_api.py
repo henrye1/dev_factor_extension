@@ -406,6 +406,20 @@ def _engine_44():
     return compute(load_zip("44"), Params(method=3, target_ts=360, max_bucket=480, window=24))
 
 
+def test_formula_workbook_keeps_live_slope_cells_under_the_log_linear_solver(world):
+    H = {"X-Requested-With": "hazard-ext"}
+    s = world.editor.post(f"/api/projects/{world.pid}/scenarios",
+                          json={"name": "OLS", "params": {"method": 3, "target_ts": 360, "max_bucket": 480, "fit_solver": "ols"}},
+                          headers=H).json()
+    world.editor.post(f"/api/projects/{world.pid}/scenarios/{s['id']}/run", json={}, headers=H)
+    r = world.viewer.get(f"/api/projects/{world.pid}/results/{s['id']}/{world.d44}/export?kind=formula")
+    assert r.status_code == 200, r.text
+    cfg = openpyxl.load_workbook(io.BytesIO(r.content), data_only=False)["Config"]
+    assert cfg["B32"].value == "=IF(B35<0,SQRT(-1/(2*B35)),NA())" and cfg["B33"].value.startswith('=IF(MuOvr<>"",MuOvr,')
+    assert cfg["B25"].value.startswith("=-SLOPE(")
+    world.editor.delete(f"/api/projects/{world.pid}/scenarios/{s['id']}", headers=H)
+
+
 def test_values_workbook(world):
     r = world.viewer.get(f"/api/projects/{world.pid}/results/{world.sid}/{world.d44}/export?kind=values")
     assert r.status_code == 200
@@ -441,7 +455,12 @@ def test_formula_workbook(world):
     assert cfg["B6"].value == 480 and cfg["B8"].value == 24 and cfg["B11"].value == 3 and cfg["B12"].value is None
     assert cfg["B22"].value == "=(1+Rate)^(-1/12)"
     assert cfg["B27"].value == '=IF(LamOvr="",B25,LamOvr)'
-    assert cfg["B32"].value == "=IF(B35<0,SQRT(-1/(2*B35)),NA())" and cfg["B33"].value.startswith('=IF(MuOvr<>"",MuOvr,')
+    # the default solver is Levenberg–Marquardt: the fitted and used parameters are values from
+    # the app, labelled as such; the SLOPE-based formulas appear under the log-linear solver
+    assert cfg["B32"].value == pytest.approx(e.config["sigma_fit"], abs=1e-12)
+    assert cfg["B33"].value == pytest.approx(e.config["mu"], abs=1e-12)
+    assert cfg["A32"].value.endswith("Levenberg–Marquardt fit")
+    assert any(c.value == "Fit solver" for row in cfg.iter_rows(min_col=1, max_col=1) for c in row)
     assert wb["Results"]["I10"].value == "=CHOOSE(Method,F10,G10,H10)"
     assert wb["Ext_Exp"]["C6"].value == "=IF(C$5<$A6,0,IF(C$5<=$B6,Hazard_Obs!C$6,MAX(Floor,Tail_Fit!$H$20*Tail_Fit!C$6)))"
     assert wb["Tail_Fit"]["D20"].value == "=MAX(A20,C20-WinW+1)"
@@ -669,6 +688,11 @@ def test_stored_method_3_from_the_reference_curve_days_moves_to_log_normal(world
     out = migrate_three_methods(world.app.state.session_factory)
     assert out["stripped"] == 2 and out["stale"] == 1
     assert migrate_three_methods(world.app.state.session_factory) == {"stripped": 0, "stale": 0}
+    # a scenario saved before the fit solver existed is stamped with the log-linear solver, once
+    from hazard_ext.web.runner import migrate_fit_solver
+    assert migrate_fit_solver(world.app.state.session_factory)["stamped"] >= 1
+    assert migrate_fit_solver(world.app.state.session_factory) == {"stamped": 0}
+    assert world.viewer.get(f"/api/projects/{pid}/scenarios/{sid}").json()["params"]["fit_solver"] == "ols"
     got = world.viewer.get(f"/api/projects/{pid}/scenarios/{sid}").json()
     assert got["params"]["method"] == 3 and "client_cohort" not in got["params"]
     assert got["overrides"][str(d44)] == {"window": 6}

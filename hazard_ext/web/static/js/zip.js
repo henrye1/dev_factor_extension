@@ -1,7 +1,7 @@
 // Results for one zip under one scenario.
 
 import { api } from "./api.js";
-import { h, clear, toast, reportError, fmt, dataTable, tabs, columnsToRows, blank, openDialog } from "./ui.js";
+import { h, clear, toast, reportError, fmt, dataTable, tabs, columnsToRows, blank, openDialog, tieOutText } from "./ui.js";
 import { lineChart, COLORS } from "./chart.js";
 import { FIELDS, fieldSet, fieldText, paramForm } from "./params.js";
 import { helpButton } from "./help.js";
@@ -115,7 +115,10 @@ export async function zipView(pid, did, sid, ctx) {
     h("div", null, h("h1", null, dataset.name),
       h("div", { class: "sub" },
         `${dataset.category ? "Category " + dataset.category : "No category"}, TermStep 1–${p.max_ts}, last observed bucket ${p.last_obs_bucket}, ` +
-        `rate in file ${fmt.pct(p.implied_rate)}, opening exposure ${fmt.moneyShort(p.opening_exposure)}`)),
+        `rate in file ${fmt.pct(p.implied_rate)}, opening exposure ${fmt.moneyShort(p.opening_exposure)}`),
+      tieOutText(p.tie_out)
+        ? h("div", { class: "sub " + (tieOutText(p.tie_out).ok ? "" : "tie-bad") }, `LGD in file, before any extension. ${tieOutText(p.tie_out).text}.`)
+        : h("div", { class: "sub muted" }, "The load-time tie-out is not available for this zip: drop it on the project again to compute it.")),
     h("div", { class: "actions" },
       h("label", { class: "small muted", for: "zip" }, "Zip"), zipNav,
       scenario ? h("label", { class: "small muted", for: "scn" }, "Scenario") : null,
@@ -234,6 +237,7 @@ export async function zipView(pid, did, sid, ctx) {
     facts([
       ["Uplift in PV recoveries", `${fmt.signed(avg.uplift)} weighted, ${fmt.signed(avg.uplift_simple)} simple average`],
       ["Discount rate", fmt.pct(cfg.rate)],
+      ["Fit solver", cfg.fit_solver_label || "Log-linear least squares"],
       ["λ", `${fmt.num(cfg.lam, 4)}${prm.lambda_override !== null ? " (override)" : ""}`],
       ["Half-life", cfg.half_life === null ? blank : `${cfg.half_life.toFixed(1)} buckets`],
       ["γ", `${fmt.num(cfg.gam, 2)}${prm.gamma_override !== null ? " (override)" : ""}`],

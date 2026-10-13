@@ -43,11 +43,43 @@ def test_zip_profile(name):
     assert prof["cohort_first"] < prof["cohort_last"]
 
 
+@pytest.mark.parametrize("name", ZIP_NAMES)
+def test_tie_out_at_load_matches_the_risk_suite_and_the_engine(name):
+    """Loading a zip recomputes the LGD from the observed buckets and reports how it ties to the
+    file, before any extension. The figures must equal the engine's own replica and averages."""
+    from hazard_ext.engine.core import compute
+
+    data = load_zip(name)
+    t = data.profile()["tie_out"]
+    assert t["term_steps"] == data.profile()["n"]
+    assert t["tie_max"] < 1e-9                       # replica vs 1 - CumulativeSumPV, every TermStep
+    assert t["runoff_tie_max"] < 1e-9                # replica from the rebuilt run-off triangle
+    assert t["floor_count"] >= 0 and t["tie_max_vs_file"] >= t["tie_max"]
+    r = compute(data, Params())
+    assert t["lgd_file"] == pytest.approx(r.averages["lgd_file"], abs=1e-12)
+    assert t["lgd_replica"] == pytest.approx(r.averages["lgd_replica"], abs=1e-12)
+    assert t["floor_count"] == int(r.averages["file_floored_count"])
+    assert t["lgd_file_ts1"] == pytest.approx(float(r.results["lgd_file"][0]), abs=1e-12)
+    assert t["lgd_replica_ts1"] == pytest.approx(float(r.results["lgd_replica"][0]), abs=1e-12)
+    if name == "44":
+        # the risk suite reports 47.8951% at term 0 days (TermStep 1) in its own export
+        assert t["lgd_file_ts1"] == pytest.approx(0.478951, abs=5e-7)
+        assert t["lgd_replica_ts1"] == pytest.approx(0.478951, abs=5e-7)
+        # the risk suite floors TermStep 2 at TermStep 1 (0.478951); the unfloored figure is 0.476319
+        assert t["floor_count"] == 1 and t["floor_max"] == pytest.approx(0.002632, abs=1e-6)
+        assert t["tie_max_vs_file"] == pytest.approx(0.002632, abs=1e-6)
+        assert t["lgd_file"] == pytest.approx(0.611995, abs=1e-6)
+
+
 def test_zip_without_runoff_uploads_with_the_filter_unavailable():
     data = parse_zip(_zip_bytes({"lgd_recovery.csv": GOOD_CSV, "debug.json": "{}"}))
     prof = data.profile()
     assert prof["has_runoff"] is False and prof["vintage_filter"] is False and prof["cohort_first"] is None
     assert not data.runoff_status.get("ok") and not data.vintage_filter_available
+    t = prof["tie_out"]
+    assert t["runoff_tie_max"] is None and t["term_steps"] == 1
+    # one row: RecoveryPct 0.1 at DiscountFactor 0.98 -> replica 1 - 0.098 = 0.902, as the file says
+    assert t["lgd_replica"] == pytest.approx(0.902, abs=1e-12) and t["tie_max"] < 1e-12
 
 
 def test_bad_runoff_files():
