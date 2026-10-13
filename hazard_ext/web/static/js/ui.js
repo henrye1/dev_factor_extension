@@ -56,6 +56,32 @@ export const fmt = {
 };
 
 // -------------------------------------------------------------------- toast
+// The load-time tie-out: the LGD recomputed from the observed buckets (no extension) against the
+// file's own LGD. `t` is profile.tie_out; missing on zips stored before it existed.
+const pct4 = (v) => (v === null || v === undefined ? blank : (v * 100).toFixed(4) + "%");
+
+export function tieOutText(t) {
+  if (!t || t.lgd_file_ts1 === undefined) return null;
+  const ok = t.tie_max < 1e-9 && (t.runoff_tie_max === null || t.runoff_tie_max === undefined || t.runoff_tie_max < 1e-9);
+  const parts = [`TermStep 1: file ${pct4(t.lgd_file_ts1)}, recomputed from the observed buckets ${pct4(t.lgd_replica_ts1)}`,
+    `exposure-weighted over all TermSteps: file ${fmt.lgd(t.lgd_file)}, recomputed ${fmt.lgd(t.lgd_replica)}`,
+    (t.tie_max < 1e-9 ? "ties to 1 − CumulativeSumPV on every TermStep" : `gap to 1 − CumulativeSumPV ${t.tie_max.toExponential(1)}`)];
+  if (t.runoff_tie_max !== null && t.runoff_tie_max !== undefined) {
+    parts.push(t.runoff_tie_max < 1e-9 ? "the run-off rebuild ties too" : `run-off rebuild gap ${t.runoff_tie_max.toExponential(1)}`);
+  }
+  if (t.floor_count) {
+    parts.push(`${t.floor_count} TermStep${t.floor_count > 1 ? "s" : ""} floored by the risk suite at the previous LGD, largest gap ${fmt.lgd(t.floor_max)}`);
+  }
+  return { ok, text: parts.join("; ") };
+}
+
+export function tieOutCell(t) {
+  const d = tieOutText(t);
+  if (!d) return h("span", { class: "muted", title: "Drop the zip on the project again to compute the tie-out at load" }, "Re-upload to compute");
+  return h("div", { title: d.text }, pct4(t.lgd_file_ts1),
+    h("div", { class: "small " + (d.ok ? "muted" : "tie-bad") }, d.ok ? "ties to the file" : `gap ${t.tie_max.toExponential(1)}`));
+}
+
 export function toast(message, bad = false) {
   const box = document.getElementById("toast");
   const item = h("div", { class: bad ? "bad" : "", role: bad ? "alert" : "status" }, message);

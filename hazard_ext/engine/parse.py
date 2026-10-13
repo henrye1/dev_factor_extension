@@ -101,6 +101,21 @@ def _triangles_from_rows(a: np.ndarray, implied_rate: float) -> Triangles:
                      last_obs_file=last_obs_file, implied_rate=implied_rate)
 
 
+def replica_lgd(tri: Triangles) -> np.ndarray:
+    """1 − PV of the observed RecoveryPct per TermStep, discounted as the file does
+    (DiscountIndex = b − ts + 1): the LGD before any extension. Index 0 is nan."""
+    n = tri.n
+    v = (1.0 + tri.implied_rate) ** (-1.0 / 12.0)
+    b = np.arange(n + 1, dtype=float)
+    vb = v ** b
+    vb[0] = 0.0
+    disc = v ** (b - 1.0)                       # v^(ts-1), same index as ts
+    pv = (tri.R * vb[None, :]).sum(axis=1) / disc
+    out = 1.0 - pv
+    out[0] = np.nan
+    return out
+
+
 def rebuild_rows(block: RunoffBlock, keep: np.ndarray, rate: float) -> np.ndarray:
     """Rebuild the lgd_recovery rows for the vintages flagged in ``keep``.
 
@@ -333,6 +348,55 @@ class RecoveryData:
         self.runoff_status = {"ok": True, "reason": ""}
         return self.runoff_status
 
+    def tie_out(self, event: str | None = None) -> dict:
+        """Recompute the LGD from the observed buckets, before any extension, and measure how it
+        ties to the risk suite's own figures. Reported at load so a reviewer can see, next to the
+        rate in the file, that the data was read correctly.
+
+        lgd_file_ts1 / lgd_replica_ts1: the TermStep 1 figures, which the risk suite reports at
+        term 0 days, so they can be reconciled by eye. lgd_file / lgd_replica: exposure-weighted
+        over the observed TermSteps, as the results page averages them. tie_max: largest |replica − (1 − CumulativeSumPV)| over the TermSteps.
+        tie_max_vs_file: the same against the file's LGD column, which the risk suite floors at the
+        previous TermStep's LGD (floor_count, floor_max). runoff_tie_max: the replica from the
+        triangle rebuilt out of runoff_triangle.csv against the one from lgd_recovery.csv, or None
+        when the zip has no usable run-off data."""
+        ev = event or self.event_types[0]
+        tri = self.triangles(ev)
+        n = tri.n
+        s = slice(1, n + 1)
+        rep = replica_lgd(tri)
+        w = np.diagonal(tri.E)[s]
+        wsum = float(w.sum())
+
+        def wavg(col):
+            return float((w * np.nan_to_num(col, nan=0.0)).sum() / wsum) if wsum > 0 else float("nan")
+
+        def maxabs(x):
+            x = x[np.isfinite(x)]
+            return float(np.abs(x).max()) if x.size else 0.0
+
+        floor_gap = tri.lgd_file[s] - tri.lgd_unfloored[s]
+        runoff_tie = None
+        if self.vintage_filter_available:
+            block = self.runoff[ev]
+            rows = rebuild_rows(block, np.ones(len(block.cohort), dtype=bool), tri.implied_rate)
+            runoff_tie = maxabs(replica_lgd(_triangles_from_rows(rows, tri.implied_rate))[s] - rep[s])
+        def first(col):
+            return float(col[1]) if n >= 1 and np.isfinite(col[1]) else None
+
+        return {
+            "term_steps": n,
+            "lgd_file_ts1": first(tri.lgd_file),      # the risk suite's LGD at term 0 days
+            "lgd_replica_ts1": first(rep),
+            "lgd_file": wavg(tri.lgd_file[s]),
+            "lgd_replica": wavg(rep[s]),
+            "tie_max": maxabs(rep[s] - tri.lgd_unfloored[s]),
+            "tie_max_vs_file": maxabs(rep[s] - tri.lgd_file[s]),
+            "floor_count": int((floor_gap[np.isfinite(floor_gap)] > 1e-12).sum()),
+            "floor_max": maxabs(floor_gap),
+            "runoff_tie_max": runoff_tie,
+        }
+
     def profile(self) -> dict:
         ev = self.event_types[0]
         tri = self.triangles(ev)
@@ -341,6 +405,7 @@ class RecoveryData:
         opening = float(tri.E[1, 1]) if tri.n >= 1 else 0.0
         vint = self.vintage_summary(ev)
         return {
+            "tie_out": self.tie_out(ev),
             "category": self.category,
             "event_types": self.event_types,
             "identical_events": self.identical_events,

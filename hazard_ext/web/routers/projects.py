@@ -241,7 +241,7 @@ def upload_datasets(request: Request, files: list[UploadFile] = File(...),
                 raise ParseError(f"The file is larger than the {settings.max_upload_mb} MB limit")
             sha = digest.hexdigest()
             dup = db.execute(select(Dataset).where(Dataset.project_id == pid, Dataset.sha256 == sha)).scalar_one_or_none()
-            if dup is not None and (dup.profile or {}).get("has_runoff"):
+            if dup is not None and (dup.profile or {}).get("has_runoff") and "lgd_file_ts1" in ((dup.profile or {}).get("tie_out") or {}):
                 raise ParseError(f"This zip is already in the project as '{dup.name}'")
             up.file.seek(0)
             data = parse_zip(up.file)
@@ -249,8 +249,9 @@ def upload_datasets(request: Request, files: list[UploadFile] = File(...),
             key = f"p{pid}/{uuid.uuid4().hex}.npz"
             store.put(key, data.to_bytes())
             if dup is not None:
-                # the same zip, stored before runoff_triangle was read: replace the parsed data in
-                # place so the zip keeps its id, name, overrides and results (now out of date)
+                # the same zip, stored before runoff_triangle was read or before the load-time
+                # tie-out existed: replace the parsed data in place so the zip keeps its id, name,
+                # overrides and results (now out of date)
                 old_key = dup.blob_key
                 dup.blob_key, dup.profile, dup.meta, dup.size_bytes = key, profile, data.meta, size
                 dup.uploaded_by, dup.uploaded_at = access.user.id, utcnow()

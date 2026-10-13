@@ -8,7 +8,7 @@ export const METHOD_HELP = {
     title: "Method 1: exponential decay",
     text: [
       "The tail shape is e^(−λb), where b is the bucket number. Each month the recovery rate falls by the same proportion, so the tail has a constant half-life of ln 2 ÷ λ months.",
-      "λ is fitted by a log-linear regression of ln RecoveryPct on bucket number along the reference row, from FitStart to that row's last credible bucket. It can be replaced with the λ override.",
+      "λ is fitted on the reference row from FitStart to that row's last credible bucket, with the scenario's fit solver: by default a weighted Levenberg–Marquardt fit of c·e^(−λb) to RecoveryPct on the recovery scale, each bucket weighted by its bucket number, as the client fits its curves; or, with the log-linear solver, a regression of ln RecoveryPct on bucket number as in the hand-built workbooks. It can be replaced with the λ override.",
       "This is the challenger's own view of itself. It extends the steep decay seen in the observed data and adds the least recovery of the three shapes. Treat it as the independent, conservative scenario.",
       "Because the fitted tail also replaces the thin observed buckets beyond the credibility cut, a row whose late buckets were noisy but generous can end up with a lower recovery than the file gave it. That is the credibility cut doing its job, not an error.",
     ],
@@ -17,7 +17,7 @@ export const METHOD_HELP = {
     title: "Method 2: power law",
     text: [
       "The tail shape is b^(−γ). The recovery rate still falls every month, but by a shrinking proportion, so the tail is heavier than the exponential and has no fixed half-life.",
-      "γ is fitted the same way as λ, by regressing ln RecoveryPct on ln b over the same window, and can be replaced with the γ override.",
+      "γ is fitted the same way as λ, with the same solver on the same points (c·b^(−γ) under Levenberg–Marquardt; ln RecoveryPct on ln b under the log-linear solver), and can be replaced with the γ override.",
       "This is the second independent view: only the challenger's own data, but with the assumption that late collections persist the way long-run recovery books tend to. It usually sits between the exponential and the log-normal.",
     ],
   },
@@ -25,7 +25,7 @@ export const METHOD_HELP = {
     title: "Method 3: log-normal",
     text: [
       "The tail shape is (1/b) × exp(−(ln b − μ)² ÷ (2σ²)): the log-normal density in the bucket number, the same functional form as the client's industry recovery curves. Recoveries rise to a peak at bucket exp(μ − σ²) and then decay, more slowly than the exponential and with a heavier tail the larger σ is.",
-      "μ and σ are fitted to the challenger's own data with the same log-linear least-squares regression as λ and γ, on the same points: ln RecoveryPct + ln b is regressed on ln b and its square along the reference row from FitStart to that row's last credible bucket. Either parameter can be replaced with an override; with one given, the other is still fitted by a single regression.",
+      "μ and σ are fitted to the challenger's own data with the same solver as λ and γ, on the same points along the reference row from FitStart to that row's last credible bucket. By default that is the client's own method: a weighted Levenberg–Marquardt fit of c × the log-normal shape to RecoveryPct on the recovery scale, each bucket weighted by its bucket number, so the fitted μ and σ are on the same footing as the client's Mu and s. With the log-linear solver, ln RecoveryPct + ln b is regressed on ln b and its square instead. Either parameter can be replaced with an override; with one given, the other is still fitted.",
       "Nothing is borrowed from the client except the functional form. The level is scaled to the challenger's own last credible buckets like the other two shapes, so the fitted μ and σ can be compared directly with the client's parameters without using the client's curve.",
       "The fit is undefined when the tail is not concave in ln b over the regression window (the quadratic coefficient is not negative) or when fewer than three points remain. The log-normal columns are then blank, a warning explains why, and a scenario on method 3 fails for that zip with a clear message rather than falling back to another shape.",
     ],
@@ -142,6 +142,12 @@ export const PARAM_HELP = {
     what: "The row whose observed tail is used to fit the decay parameters λ, γ and the log-normal μ and σ.",
     def: "1, the longest and best-populated row.",
     effect: "A later row has fewer buckets and less exposure, so the fit is noisier. Change it only when TermStep 1 is not representative.",
+  },
+  fit_solver: {
+    title: "Fit solver (how λ, γ, μ, σ are fitted)",
+    what: "How λ, γ, μ and σ are fitted on the regression window. Levenberg–Marquardt minimises the weighted squared error on the recovery scale, each bucket weighted by its bucket number so later buckets count more, which is how the client fits its curves. Log-linear least squares regresses the logs (Excel SLOPE), which is how the hand-built workbooks fit them.",
+    def: "Levenberg–Marquardt. Scenarios saved before 13 October 2026 were stamped with the log-linear solver so their results did not move.",
+    effect: "Only the fitted parameters change; the level of every row is still set on its own anchor window. The formula workbook carries Levenberg–Marquardt parameters as values, because an iterative fit cannot be a live formula; everything downstream stays live.",
   },
   fit_start: {
     title: "FitStart bucket",

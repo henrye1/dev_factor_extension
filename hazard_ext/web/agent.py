@@ -28,6 +28,8 @@ GLOSSARY = """Parameters of a scenario (the JSON key, then what people call it):
   reference-curve shape no longer exists; method 3 now means log-normal.
 - min_exposure_mode: "abs" (Rand) or "pct" (% of TermStep 1 opening exposure). min_exposure: "MinExposure", "credibility cut".
 - window: "window", "W", "anchor window" (buckets). fit_start: "FitStart". ref_ts: "reference TermStep for lambda/gamma".
+- fit_solver: "lm" (Levenberg–Marquardt on the recovery scale weighted by bucket number, "the client's fit",
+  "weighted fit", the default) or "ols" ("log-linear", "least squares on logs", "the workbook fit", "SLOPE fit").
 - lambda_override / gamma_override: numbers or null for fitted. mu_override / sigma_override: the log-normal μ and σ
   (on ln b), numbers or null for fitted. floor: "hazard floor".
 - base_ts: "base TermStep", "base row". last_ts: "LastTS", "last own row", null = last observed TermStep.

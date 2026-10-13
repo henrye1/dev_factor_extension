@@ -289,10 +289,25 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
             ("Log-normal mode (bucket of peak recovery) = exp(μ − σ²)", "=EXP(Mu-Sig^2)", cfg["logn_mode"]),
             ("Log-normal median (bucket) = exp(μ)", "=EXP(Mu)", cfg["logn_median"]),
         ]
+        # Under the Levenberg–Marquardt solver the fitted and used parameters are values from the
+        # app (an iterative fit cannot be a live formula); the SLOPE-based cells stay for the
+        # log-linear solver. Everything downstream of these cells is live either way.
+        as_value = {3, 4, 9, 10, 11, 12} if p.fit_solver == "lm" else set()
         for i, (label, formula, value) in enumerate(derived):
+            if i in as_value:
+                w.write(21 + i, 0, label + " – value from the app's weighted Levenberg–Marquardt fit")
+                if isinstance(value, (int, float)) and value == value and abs(value) != float("inf"):
+                    w.write_number(21 + i, 1, float(value), f["num"])
+                else:
+                    w.write_formula(21 + i, 1, "=NA()", f["num"])
+                continue
             w.write(21 + i, 0, label)
             w.write_formula(21 + i, 1, formula, f["num"] if i not in (1, 7) else None, _v(value))
         info = [
+            ("Fit solver", cfg.get("fit_solver_label", "Log-linear least squares"),
+             "Fixed when the workbook is built. Levenberg–Marquardt: λ, γ, μ and σ above are values from the app's "
+             "weighted fit (weights = bucket number, recovery scale), as the client fits its curves. Log-linear: "
+             "they are live SLOPE formulas."),
             ("Target TermStep (rows built on LGD_300)", T,
              "Fixed when the workbook is built. Run the scenario with another Target TermStep to change it."),
             ("Vintages", vintage_text(cfg),

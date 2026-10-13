@@ -41,6 +41,7 @@ class Golden:
         self.params = {k: self.config[label] for k, label in CONFIG_KEYS.items() if k != "client_cohort"}
         # the workbooks' method 3 was the removed client-curve shape; the golden comparisons run on method 1
         self.params["method"] = 1
+        self.params["fit_solver"] = "ols"         # the workbooks fit λ and γ with SLOPE on logs
         self.params["target_ts"] = 300
         self.params["event_type"] = self.config["EventType"]
         cohorts = [str(c) for c in z["cohorts"]]

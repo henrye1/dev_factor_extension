@@ -13,6 +13,90 @@ from hazard_ext.engine.parse import (COLUMNS, RecoveryData, RunoffBlock, from_ra
 from .conftest import ZIP_NAMES, load_zip
 
 
+# ----------------------------------------------- Levenberg–Marquardt fit solver
+def _row(values, b0=1):
+    rows = []
+    cum = 0.0
+    for i, r in enumerate(values):
+        idx = i + 1
+        df = 1.1 ** (-idx / 12)
+        cum += r * df
+        rows.append(["Lifetime", 1, 0, 1e9, b0 + i, 0.0, 0.0, float(r), idx, df, r * df, cum, 1 - cum])
+    return from_raw_frame(pd.DataFrame(rows, columns=COLUMNS))
+
+
+def test_lm_recovers_each_shape_exactly_from_exact_data():
+    from hazard_ext.engine.fit import generic_starts, lm_fit, lm_fit_multi
+    b = np.arange(1, 161, dtype=float)
+    for shape, theta, r in (("exp", [0.041], 0.3 * np.exp(-0.041 * b)),
+                            ("power", [1.9], 0.8 * b ** -1.9),
+                            ("logn", [3.1, 0.75], 0.5 * np.exp(-((np.log(b) - 3.1) ** 2) / (2 * 0.75 ** 2)) / b)):
+        # a single run from nearby converges to the truth
+        out = lm_fit(shape, b[23:], r[23:], [t * 1.15 for t in theta], [False] * len(theta))
+        assert out["converged"] and out["problem"] == ""
+        np.testing.assert_allclose(out["theta"], theta, rtol=1e-7)
+        # the multi-start used by the engine finds it from a start well away from the truth
+        starts = [[t * 1.6 for t in theta]] + generic_starts(shape, b[23:])
+        out = lm_fit_multi(shape, b[23:], r[23:], starts, [False] * len(theta))
+        assert out["converged"] and out["problem"] == "" and out["wsse"] < 1e-20
+        np.testing.assert_allclose(out["theta"], theta, rtol=1e-6)
+        # a fixed parameter is honoured and the free one still found
+        if shape == "logn":
+            out2 = lm_fit(shape, b[23:], r[23:], [2.0, 0.75], [False, True])
+            assert out2["theta"][1] == 0.75 and out2["theta"][0] == pytest.approx(3.1, abs=1e-6)
+
+
+def test_lm_is_the_default_and_differs_from_the_log_linear_fit(zip44):
+    from hazard_ext.engine.fit import weighted_sse
+    assert Params().fit_solver == "lm"
+    lm = compute(zip44, Params(method=3))
+    ols = compute(zip44, Params(method=3, fit_solver="ols"))
+    c = lm.config
+    assert c["fit_solver"] == "lm" and c["fit_solver_label"].startswith("Levenberg")
+    assert all(c["fit_info"][k]["converged"] for k in ("exp", "power", "logn"))
+    # the two solvers answer a different question, so the parameters differ, but not wildly
+    assert c["lam_fit"] != ols.config["lam_fit"] and abs(c["lam_fit"] - ols.config["lam_fit"]) < 0.03
+    assert abs(c["mu_fit"] - ols.config["mu_fit"]) < 0.6 and abs(c["sigma_fit"] - ols.config["sigma_fit"]) < 0.6
+    # on the fit's own criterion the LM solution is at least as good as the log-linear start
+    b = np.arange(24, int(c["ref_last_cred"]) + 1, dtype=float)
+    r = np.asarray(zip44.triangles("Lifetime").R[1, 24:int(c["ref_last_cred"]) + 1])
+    keep = r > 0
+    for shape, th_lm, th_ols in (("exp", [c["lam_fit"]], [ols.config["lam_fit"]]),
+                                 ("power", [c["gam_fit"]], [ols.config["gam_fit"]]),
+                                 ("logn", [c["mu_fit"], c["sigma_fit"]], [ols.config["mu_fit"], ols.config["sigma_fit"]])):
+        assert weighted_sse(shape, b[keep], r[keep], th_lm) <= weighted_sse(shape, b[keep], r[keep], th_ols) * (1 + 1e-9)
+    # the exponential and power-law numbers under the log-linear solver are untouched
+    assert ols.config["lam_fit"] == pytest.approx(0.05280640911655887, abs=1e-12)
+    # the selected LGD is finite and the three shapes still bracket each other sensibly
+    assert np.isfinite(lm.results["lgd_selected"]).all() and np.isfinite(lm.averages["lgd_exp"])
+
+
+def test_lm_overrides_hold_a_parameter_fixed(zip44):
+    full = compute(zip44, Params(method=3))
+    one = compute(zip44, Params(method=3, sigma_override=0.9))
+    assert one.config["sigma"] == 0.9 and one.config["mu"] != full.config["mu"]
+    assert one.config["mu_fit"] == pytest.approx(full.config["mu_fit"])     # the full fit is still reported
+    both = compute(zip44, Params(method=3, mu_override=3.25, sigma_override=0.9))
+    assert (both.config["mu"], both.config["sigma"]) == (3.25, 0.9)
+    lam = compute(zip44, Params(method=1, lambda_override=0.02))
+    assert lam.config["lam"] == 0.02 and lam.config["lam_fit"] == pytest.approx(full.config["lam_fit"])
+
+
+def test_lm_rising_row_is_undefined_not_a_forecast():
+    data = _row([0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05, 0.06])
+    res = compute(data, Params(method=3, fit_start=1, min_exposure=0, target_ts=5, max_bucket=60, mu_override=2.0, sigma_override=1.0))
+    assert res.config["lam_fit"] < 0 and np.isnan(res.config["lam"]) and np.isnan(res.config["gam"])
+    assert sum("rises instead of decaying" in w for w in res.warnings) == 2
+    with pytest.raises(EngineError, match="undefined"):
+        compute(data, Params(method=1, fit_start=1, min_exposure=0, target_ts=5, max_bucket=60))
+
+
+def test_old_stored_parameters_load_with_the_default_solver():
+    p = load_params({"method": 3, "window": 6})
+    assert p.fit_solver == "lm" and p.window == 6
+    assert merge_params({"fit_solver": "ols"}, {"window": 4}).fit_solver == "ols"
+
+
 # ------------------------------------------------------------ log-normal fit
 def _synthetic(mu=3.2, sigma=0.8, k=0.37, b0=1, b1=160):
     """A recovery row R(b) = k · s_logn(b) with the file layout, so the engine can fit it."""
@@ -49,24 +133,25 @@ def test_synthetic_lognormal_row_is_recovered_exactly():
 def test_row_that_is_not_concave_in_ln_b_leaves_lognormal_undefined():
     # ln R + ln b is convex in ln b here, so the quadratic coefficient a2 is not negative
     b = np.arange(1, 80, dtype=float)
-    r = 1e-4 * np.exp(0.02 * (np.log(b) ** 2))
+    # R decays in b (so λ and γ fit), but ln R + ln b is convex in ln b: the quadratic coefficient is not negative
+    r = 1e-2 * b ** -1.5 * np.exp(0.05 * np.log(b) ** 2)
     rows = [["Lifetime", 1, 0, 1e9, int(bb), 0.0, 0.0, r[i], i + 1, 0.99 ** (i + 1), r[i] * 0.99 ** (i + 1), 0.0, 1.0]
             for i, bb in enumerate(b)]
     data = from_raw_frame(pd.DataFrame(rows, columns=COLUMNS))
-    res = compute(data, Params(method=1, fit_start=24, min_exposure=0, target_ts=10, max_bucket=100))
+    res = compute(data, Params(method=1, fit_start=24, min_exposure=0, target_ts=10, max_bucket=100, fit_solver="ols"))
     assert np.isnan(res.config["mu"]) and np.isnan(res.config["sigma"]) and res.config["logn_points"] == 0
     assert any("not concave" in w for w in res.warnings)
     assert np.isnan(res.results["lgd_logn"]).all() and np.isnan(res.lgd_ts["derived_logn"]).all()
     assert np.isnan(res.averages["lgd_logn"]) and res.to_json()["averages"]["lgd_logn"] is None
     assert np.isfinite(res.results["lgd_exp"]).all() and np.isfinite(res.results["lgd_power"]).all()
     with pytest.raises(EngineError, match="μ / σ"):
-        compute(data, Params(method=3, fit_start=24, min_exposure=0, target_ts=10, max_bucket=100))
+        compute(data, Params(method=3, fit_start=24, min_exposure=0, target_ts=10, max_bucket=100, fit_solver="ols"))
 
 
 @pytest.mark.parametrize("name, mu, sigma, window", [("44", 3.043, 0.703, (24, 89)), ("22", 3.769, 0.792, (24, 151)),
                                                      ("ALL", 3.722, 0.943, (24, 328))])
 def test_fitted_parameters_on_the_zips_match_the_design_note(name, mu, sigma, window):
-    r = compute(load_zip(name), Params(method=3))
+    r = compute(load_zip(name), Params(method=3, fit_solver="ols"))
     assert r.config["mu"] == pytest.approx(mu, abs=1e-3) and r.config["sigma"] == pytest.approx(sigma, abs=1e-3)
     assert (r.params["fit_start"], r.config["ref_last_cred"]) == window
     assert np.isfinite(r.results["lgd_selected"]).all()
@@ -198,3 +283,20 @@ def test_self_check_failure_disables_the_filter_but_keeps_the_data(zip44):
     compute(data, Params())
     with pytest.raises(EngineError, match="does not reproduce"):
         compute(data, Params(vintage_years=5))
+
+
+def test_rising_fitted_decay_is_undefined_not_a_forecast():
+    # two rising points: the regression slopes upward, so lambda and gamma come out negative
+    rows = [["Lifetime", 1, 0, 1e9, b, 0.0, 0.0, r, b, 0.99 ** b, r * 0.99 ** b, 0.0, 1.0]
+            for b, r in ((1, 0.05), (2, 0.04), (3, 0.03), (4, 0.02), (5, 0.03), (6, 0.05))]
+    data = from_raw_frame(pd.DataFrame(rows, columns=COLUMNS))
+    res = compute(data, Params(method=3, fit_start=5, min_exposure=0, target_ts=5, max_bucket=60, mu_override=2.0, sigma_override=1.0))
+    assert res.config["lam_fit"] < 0 and np.isnan(res.config["lam"]) and np.isnan(res.config["gam"])
+    assert np.isnan(res.results["lgd_exp"]).all() and np.isnan(res.results["lgd_power"]).all()
+    assert sum("rises instead of decaying" in w for w in res.warnings) == 2
+    for method in (1, 2):
+        with pytest.raises(EngineError, match="undefined"):
+            compute(data, Params(method=method, fit_start=5, min_exposure=0, target_ts=5, max_bucket=60))
+    # an override is the user's choice and still runs
+    r = compute(data, Params(method=1, fit_start=5, min_exposure=0, target_ts=5, max_bucket=60, lambda_override=-0.01))
+    assert r.config["lam"] == -0.01 and np.isfinite(r.results["lgd_exp"]).all()

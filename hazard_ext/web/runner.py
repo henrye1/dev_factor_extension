@@ -144,6 +144,25 @@ def mark_stale(db: Session, *, scenario_id: int | None = None, dataset_id: int |
     db.execute(stmt)
 
 
+def migrate_fit_solver(session_factory) -> dict:
+    """One-off data migration for the fit solver parameter (13 October 2026). Idempotent.
+
+    Scenarios saved before the parameter existed were fitted by log-linear least squares. They
+    are stamped ``fit_solver = "ols"`` so their stored results stay exactly what they were;
+    new scenarios default to the weighted Levenberg–Marquardt fit. Overrides are left alone
+    (a missing key inherits the scenario's value)."""
+    stamped = 0
+    with session_factory() as db:
+        for s in db.execute(select(Scenario)).scalars():
+            if "fit_solver" not in (s.params or {}):
+                s.params = {**(s.params or {}), "fit_solver": "ols"}
+                stamped += 1
+        db.commit()
+    if stamped:
+        log.info("Fit-solver migration: %d scenario(s) stamped with the log-linear solver", stamped)
+    return {"stamped": stamped}
+
+
 def migrate_three_methods(session_factory) -> dict:
     """One-off data migration for the switch from the reference-curve shape to log-normal
     (9 October 2026). Idempotent and cheap, so it runs at every start.

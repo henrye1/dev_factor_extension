@@ -26,6 +26,9 @@ class Params(BaseModel):
     fit_start: int = Field(24, ge=1, le=2000, description="Start of the regression window for the decay parameters")
     ref_ts: int = Field(1, ge=1, le=2000, description="TermStep row used to fit the decay parameters")
     method: Literal[1, 2, 3] = Field(1, description="1 exponential, 2 power law, 3 log-normal")
+    fit_solver: Literal["lm", "ols"] = Field(
+        "lm", description="lm = Levenberg–Marquardt on the recovery scale, weighted by bucket number, as the "
+                          "client's curve fit; ols = log-linear least squares, as the hand-built workbooks")
     horizon: int = Field(12, ge=1, le=2000, description="Short horizon (months)")
     horizon2: int = Field(120, ge=1, le=2000, description="Valuation horizon (months)")
     lambda_override: Optional[float] = Field(None, ge=-1, le=50, description="Exponential decay per bucket; blank = fitted")

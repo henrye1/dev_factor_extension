@@ -5,6 +5,7 @@ import { h } from "./ui.js";
 import { helpButton } from "./help.js";
 
 export const METHODS = { 1: "1 – Exponential", 2: "2 – Power law", 3: "3 – Log-normal" };
+export const SOLVERS = { lm: "Levenberg–Marquardt, weighted by bucket (as the client)", ols: "Log-linear least squares (hand-built workbooks)" };
 
 // kind: int | float | select | text | vintage ; blank: the field may be left empty
 // A "vintage" field is one control that writes two parameters (vintage_years, vintage_start).
@@ -21,6 +22,9 @@ export const FIELDS = [
   { group: "Tail", name: "method", label: "Method", kind: "select",
     options: () => Object.entries(METHODS).map(([v, l]) => [Number(v), l]),
     hint: "The shape used for the selected LGD. All three are always computed." },
+  { group: "Tail", name: "fit_solver", label: "Fit solver (how λ, γ, μ, σ are fitted)", kind: "select",
+    options: () => Object.entries(SOLVERS),
+    hint: "Levenberg–Marquardt, weighted by bucket, matches the client's curve fit. Log-linear least squares reproduces the hand-built workbooks." },
   { group: "Tail", name: "min_exposure_mode", label: "MinExposure basis", kind: "select",
     options: () => [["abs", "Rand amount"], ["pct", "% of TermStep 1 opening exposure"]],
     hint: "How the credibility cut below is stated." },
@@ -74,6 +78,7 @@ export function describe(name, value) {
   let text = value === null || value === "" ? "empty" : String(value);
   if (typeof value === "number" && Math.abs(value) >= 1000) text = value.toLocaleString("en-US");
   if (name === "method") text = METHODS[value] || text;
+  if (name === "fit_solver") text = SOLVERS[value] || text;
   if (name === "min_exposure_mode") text = value === "pct" ? "% of opening" : "Rand";
   return `${label}: ${text}`;
 }

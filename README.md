@@ -71,6 +71,7 @@ Which database it uses depends on `.env`:
 | Hazard floor | 0 | Minimum RecoveryPct on the tail |
 | Reference TermStep | 1 | Row whose tail is fitted for λ and γ |
 | FitStart | 24 | Start of the regression window |
+| Fit solver | lm | lm = weighted Levenberg–Marquardt on the recovery scale (as the client), ols = log-linear least squares (as the hand-built workbooks) |
 | λ, γ override | empty | Empty = fitted |
 | Log-normal μ, σ override | empty | Empty = fitted; with one given, the other is still fitted |
 | Base TermStep | 1 | Row rolled forward beyond LastTS |
@@ -85,11 +86,22 @@ All three shapes are fitted to the zip's own data on the same points (the refere
 from FitStart to its last credible bucket) and scaled on the same anchor window. Nothing is taken
 from the client.
 
-| Method | Shape | Fitted parameters | Solver |
+| Method | Shape | Fitted parameters | Log-linear solver (`ols`) |
 |---|---|---|---|
 | 1 | Exponential e^(−λb) | λ | least squares of ln R on b |
 | 2 | Power law b^(−γ) | γ | least squares of ln R on ln b |
 | 3 | Log-normal (1/b)·exp(−(ln b − μ)²/(2σ²)) | μ, σ | least squares of ln R + ln b on ln b and (ln b)² |
+
+**Fit solver.** From 13 October 2026 a scenario chooses how the parameters are fitted. The
+default, `lm`, is the client's own method: a weighted Levenberg–Marquardt fit of c × shape to
+RecoveryPct on the recovery scale, each bucket weighted by its bucket number so later buckets
+count more (`hazard_ext/engine/fit.py`, pure numpy, started from the log-linear estimate). The
+level c is discarded because every row is re-levelled on its own anchor window; only the shape
+parameters are kept. `ols` is the log-linear least-squares fit in the table, which reproduces the
+hand-built workbooks' SLOPE cells. Scenarios saved before the parameter existed were stamped
+`ols` at start-up so their results did not move. On cohort 44 the two solvers give λ of 0.0528
+(ols) against the weighted fit's value shown on the results page; the formula workbook carries
+`lm` parameters as values, since an iterative fit cannot be a live formula.
 
 The log-normal has the functional form of the client's industry curves, so its fitted μ and σ can
 be compared with the client's parameters. It replaced the earlier "reference curve shape" on
@@ -142,6 +154,15 @@ default (`AGENT_MODEL`); an instruction costs about a cent or two.
 
 ### Two things the app reports that the workbooks did not
 
+- **Tie-out at load.** When a zip is uploaded the app recomputes the LGD from the observed
+  buckets, with no extension, discounted at the rate in the file, and shows the result next to
+  the rate on the project page and the zip page: the TermStep 1 LGD in the file (the figure the
+  risk suite reports at term 0 days, 47.8951% for cohort 44), the exposure-weighted LGD, whether
+  the recomputed figure ties to `1 − CumulativeSumPV` on every TermStep (it ties to 1e-15 on all
+  seven zips of 2 October 2026), whether the triangle rebuilt from `runoff_triangle.csv` ties
+  too, and how many TermSteps the risk suite floored. This is the evidence that the data was
+  loaded correctly before any assumption is applied. Zips stored before 13 October 2026 show
+  "Re-upload to compute": drop the same zip on the project again and it is updated in place.
 - **File LGD floor.** The risk suite floors each TermStep's LGD at the previous TermStep's
   LGD. Where that bites, the file's LGD is not `1 − CumulativeSumPV`. The app shows the file
   value as "Original LGD", reports the gap in its own column, and measures the tie-out
