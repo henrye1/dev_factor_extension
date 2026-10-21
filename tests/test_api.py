@@ -9,7 +9,6 @@ import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 
-from sqlalchemy import select
 
 from hazard_ext.engine.core import compute
 from hazard_ext.engine.params import Params

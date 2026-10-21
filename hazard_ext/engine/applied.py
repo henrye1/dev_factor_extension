@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._util import EPS as _EPS
+
 BASES = ("face", "outstanding")
-_EPS = 1e-9
 
 
 def to_face(curve: np.ndarray, basis: str) -> np.ndarray:

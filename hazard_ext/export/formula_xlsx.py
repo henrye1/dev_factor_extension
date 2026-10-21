@@ -22,21 +22,18 @@ opens populated; Excel recalculates it on load.
 from __future__ import annotations
 
 import math
-import os
-import tempfile
 
 import numpy as np
-import xlsxwriter
 from xlsxwriter.utility import xl_col_to_name as CN
 
 from ..engine.core import ExtensionResult
 from ..engine.params import Params
 from ..engine.parse import COLUMNS, RecoveryData, month_int
-from .summary_xlsx import vintage_text
+from ._xlsx import NAVY, build_xlsx, formats
+from .tables import vintage_text
 
 TR = 19                       # Tail_Fit: the per-TermStep table starts on row TR + 1 (header on row TR)
 
-NAVY = "#1F3A5F"
 _EPS_TXT = "0.000000001"
 
 
@@ -142,32 +139,8 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
     lgd_last = 12 + T
     helper = _logn_helper_rows(res, p, n, wd)
 
-    fd, path = tempfile.mkstemp(suffix=".xlsx")
-    os.close(fd)
-    try:
-        # plain write() never turns text into a formula or link; formulas go through write_formula
-        wb = xlsxwriter.Workbook(path, {"constant_memory": True, "nan_inf_to_errors": True,
-                                        "strings_to_formulas": False, "strings_to_urls": False})
-        f = {
-            "title": wb.add_format({"bold": True, "font_size": 14, "font_color": NAVY}),
-            "bold": wb.add_format({"bold": True}),
-            "note": wb.add_format({"italic": True, "font_color": "#555555"}),
-            "wrap": wb.add_format({"text_wrap": True, "valign": "top"}),
-            "head": wb.add_format({"bold": True, "bg_color": NAVY, "font_color": "white",
-                                   "text_wrap": True, "valign": "top", "border": 1}),
-            "input": wb.add_format({"font_color": "#0000FF", "bg_color": "#DDEBF7", "border": 1}),
-            "input_money": wb.add_format({"font_color": "#0000FF", "bg_color": "#DDEBF7", "border": 1,
-                                          "num_format": "#,##0"}),
-            "input_pct": wb.add_format({"font_color": "#0000FF", "bg_color": "#DDEBF7", "border": 1,
-                                        "num_format": "0.00%"}),
-            "lgd": wb.add_format({"num_format": "0.0000"}),
-            "lgd_b": wb.add_format({"num_format": "0.0000", "bold": True}),
-            "num": wb.add_format({"num_format": "0.000000"}),
-            "sci": wb.add_format({"num_format": "0.00E+00"}),
-            "money": wb.add_format({"num_format": "#,##0"}),
-            "tri": wb.add_format({"num_format": "0.00000%;-0.00000%;"}),
-            "tri_money": wb.add_format({"num_format": "#,##0;-#,##0;"}),
-        }
+    def fill(wb) -> None:
+        f = formats(wb, tri={"num_format": "0.00000%;-0.00000%;"}, tri_money={"num_format": "#,##0;-#,##0;"})
         # Sheets are created in display order. constant_memory needs each sheet written
         # top to bottom, which every block below respects.
         ws_readme = wb.add_worksheet("README")
@@ -318,6 +291,8 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
                  if filtered else "Raw_Debug holds the file's rows over all default vintages.")),
             ("Vintage parameters (start month / last N years)",
              f"{p.vintage_start or ''} / {p.vintage_years or ''}".strip(" /") or "none", ""),
+            ("Report date ('last N years' counts back from it)", cfg.get("report_month") or "none",
+             "The scenario's report date, else the last month in the zip's runoff data (its LgdMaxDate)."),
         ]
         for i, (label, value, note) in enumerate(info):
             w.write(21 + len(derived) + i, 0, label)
@@ -672,14 +647,7 @@ def build_formula_workbook(res: ExtensionResult, data: RecoveryData, dataset_nam
         _charts(wb, ws_ch, f, n, wd, T, res_last, lgd_last, nc, wc, p, dataset_name, scenario_name,
                 cfg["lgd_file_label"])
 
-        wb.close()
-        with open(path, "rb") as fh:
-            return fh.read()
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    return build_xlsx(fill)
 
 
 def _logn_a2(res: ExtensionResult) -> float:

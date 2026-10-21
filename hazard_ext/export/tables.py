@@ -1,11 +1,13 @@
-"""Column definitions shared by the CSV and Excel exports, CSV output and the
-project summary workbook."""
+"""What the exports share apart from Excel mechanics: the column definitions of the result
+tables, the parameter labels, CSV output, the vintage wording and the final-basis marginals."""
 from __future__ import annotations
 
 import csv
 import io
 
-import xlsxwriter
+import numpy as np
+
+from ..engine._util import EPS as _EPS
 
 # (key, heading, format) – headings follow the example workbooks
 RESULT_COLUMNS = [
@@ -88,7 +90,8 @@ PARAM_LABELS = [
     ("base_ts", "Base TermStep row for the derived LGD"),
     ("last_ts", "Last observed TermStep to use as-is (blank = last observed)"),
     ("vintage_start", "Vintages from (YYYY-MM; blank = all vintages)"),
-    ("vintage_years", "Vintages within the last N years of the zip's latest vintage (blank = all)"),
+    ("vintage_years", "Vintages within the last N years up to the report date (blank = all)"),
+    ("report_date", "Report date (YYYY-MM; blank = the last month in the runoff data)"),
 ]
 
 CONFIG_LABELS = [
@@ -114,6 +117,7 @@ CONFIG_LABELS = [
     ("fit_points", "Points in the decay regression"),
     ("last_ts", "LastTS applied"),
     ("method_label", "Selected method"),
+    ("report_month", "Report date used"),
     ("vintage_start_effective", "Vintages from (effective; blank = all)"),
     ("vintage_first", "First vintage in the zip"),
     ("vintage_last", "Last vintage in the zip"),
@@ -157,51 +161,48 @@ def csv_table(payload: dict, table: str) -> str:
     return out.getvalue()
 
 
-def summary_workbook(project_name: str, matrix: dict) -> bytes:
-    """Every scenario against every zip: headline LGD figures, one row per pair."""
-    buf = io.BytesIO()
-    wb = xlsxwriter.Workbook(buf, {"in_memory": True, "strings_to_formulas": False, "strings_to_urls": False})
-    ws = wb.add_worksheet("Summary")
-    bold = wb.add_format({"bold": True})
-    head = wb.add_format({"bold": True, "bg_color": "#1F3A5F", "font_color": "white",
-                          "text_wrap": True, "valign": "top", "border": 1})
-    lgd = wb.add_format({"num_format": "0.0000"})
-    money = wb.add_format({"num_format": "#,##0"})
-    ws.write_string(0, 0, f"LGD tail extension – {project_name}", bold)
-    headings = ["Zip", "Category", "Scenario", "Status", "Stale", "Method", "Vintages",
-                "Discount rate", "Exposure (R)", "Original LGD", "Replica LGD", "LGD exponential",
-                "LGD power", "LGD log-normal", "LGD SELECTED", "Uplift (weighted)",
-                "Uplift (simple)", "λ used", "γ used", "Warnings", "Error", "Computed at"]
-    for c, h in enumerate(headings):
-        ws.write(2, c, h, head)
-    ds = {d["id"]: d for d in matrix["datasets"]}
-    sc = {s["id"]: s for s in matrix["scenarios"]}
-    row = 3
-    for cell in matrix["cells"]:
-        d, s = ds[cell["dataset_id"]], sc[cell["scenario_id"]]
-        sm = cell.get("summary") or {}
-        # write_string: names are user text and must never be parsed as formulas
-        ws.write_string(row, 0, d["name"])
-        ws.write_string(row, 1, d["category"])
-        ws.write_string(row, 2, s["name"])
-        ws.write_string(row, 3, {"none": "not run"}.get(cell["status"], cell["status"]))
-        ws.write_string(row, 4, "yes" if cell.get("stale") else "")
-        ws.write_string(row, 5, sm.get("method_label", ""))
-        ws.write_string(row, 6, sm.get("vintages") or "")
-        for c, (key, fmt) in enumerate([
-                ("rate", lgd), ("exposure_total", money), ("lgd_file", lgd), ("lgd_replica", lgd),
-                ("lgd_exp", lgd), ("lgd_power", lgd), ("lgd_logn", lgd), ("lgd_selected", lgd),
-                ("uplift", lgd), ("uplift_simple", lgd), ("lam", lgd), ("gam", lgd)], start=7):
-            if sm.get(key) is not None:
-                ws.write_number(row, c, sm[key], fmt)
-        if sm.get("warnings") is not None:
-            ws.write_number(row, 19, sm["warnings"])
-        ws.write_string(row, 20, cell.get("error", ""))
-        ws.write_string(row, 21, cell.get("computed_at", "") or "")
-        row += 1
-    ws.set_row(2, 32)
-    ws.set_column(0, 2, 18)
-    ws.set_column(3, 21, 14)
-    ws.freeze_panes(3, 3)
-    wb.close()
-    return buf.getvalue()
+def vintage_text(cfg: dict) -> str:
+    """'All vintages' or the window a filtered run used, for headings and summaries."""
+    if not cfg.get("vintage_filter"):
+        return "All vintages"
+    to = f" to {cfg['report_month']}" if cfg.get("report_month") else ""
+    return (f"From {cfg['vintage_start_effective']}{to} ({cfg['cohorts_included']} of {cfg['cohorts_total']} cohorts, "
+            f"{cfg['exposure_share']:.0%} of exposure)")
+
+
+def vintage_note(cfg: dict) -> str:
+    """The short form stored in a result's summary: '' for all vintages, else 'from 2016-08 (n of m cohorts)'."""
+    if not cfg.get("vintage_filter"):
+        return ""
+    to = f" to {cfg['report_month']}" if cfg.get("report_month") else ""
+    return f"from {cfg['vintage_start_effective']}{to} ({cfg['cohorts_included']} of {cfg['cohorts_total']} cohorts)"
+
+
+def final_marginals(res, k_max: int) -> np.ndarray:
+    """Marginal recovery in remaining step k = 1..k_max for TermStep 1..target, on the final basis:
+    the row's own extended RecoveryPct up to LastTS, the rolled-forward base row beyond.
+    Values are cash in bucket ts+k-1 as a share of the balance at ts; nan past MaxBucket."""
+    cfg = res.config
+    target, mb, last_ts, sel = int(cfg["target_ts"]), int(cfg["max_bucket"]), int(cfg["last_ts"]), int(cfg["method"]) - 1
+    base_ts = int(res.params["base_ts"])
+    width = res.base_curves.shape[1] - 1
+    out = np.full((target, k_max), np.nan)
+    c = res.base_curves[sel]
+    c_cum = np.cumsum(c)
+    for ts in range(1, target + 1):
+        hi = min(mb, ts + k_max - 1)
+        if hi < ts:
+            continue
+        n_k = hi - ts + 1
+        if ts <= last_ts and ts <= res.n:
+            row = res.ext[sel, ts, ts:hi + 1]
+        else:
+            pre = (c_cum[ts - 1] - c_cum[base_ts - 1]) if ts > base_ts else 0.0
+            factor = 1.0 - pre
+            if factor <= _EPS:
+                continue
+            seg = c[ts:min(hi, width) + 1] / factor
+            row = np.full(n_k, np.nan)
+            row[:len(seg)] = seg
+        out[ts - 1, :n_k] = row[:n_k]
+    return out

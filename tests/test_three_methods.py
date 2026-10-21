@@ -7,8 +7,7 @@ import pytest
 
 from hazard_ext.engine.core import EngineError, compute
 from hazard_ext.engine.params import Params, load_params, merge_params
-from hazard_ext.engine.parse import (COLUMNS, RecoveryData, RunoffBlock, from_raw_frame, rebuild_rows,
-                                     rebuild_rows_slow)
+from hazard_ext.engine.parse import COLUMNS, RecoveryData, RunoffBlock, from_raw_frame, vintage_triangles
 
 from .conftest import ZIP_NAMES, load_zip
 
@@ -182,32 +181,72 @@ def test_method_default_is_exponential_and_retired_keys_are_dropped():
         Params(vintage_start="August 2016")
 
 
-# ------------------------------------------------------------ vintage rebuild
+# ------------------------------------------------------------ vintage triangles
+def _triangles_by_loop(block, keep, rate):
+    """Plain loops over the definition, for checking vintage_triangles: for TermStep ts and bucket
+    b >= ts, the kept vintages with a balance at ts−1 that are observed at b."""
+    C, K = block.X.shape
+    n = K
+    R, E = np.zeros((n + 1, n + 1)), np.zeros((n + 1, n + 1))
+    lgd, unf = np.full(n + 1, np.nan), np.full(n + 1, np.nan)
+    for ts in range(1, n + 1):
+        for b in range(ts, n + 1):
+            e = cash = 0.0
+            for c in range(C):
+                if keep[c] and b < K and block.obs[c, b] and block.X[c, ts - 1] > 0:
+                    e += block.X[c, ts - 1]
+                    cash += block.X[c, b - 1] - block.X[c, b]
+            E[ts, b], R[ts, b] = e, (cash / e if e > 0 else 0.0)
+    last = max((b for b in range(n + 1) if (E[:, b] > 0).any()), default=0)
+    earlier = -np.inf
+    for ts in range(1, n + 1):
+        pv = lambda end: sum(R[ts, b] * (1 + rate) ** (-(b - ts + 1) / 12) for b in range(ts, end + 1))
+        if ts <= last:
+            unf[ts] = 1 - pv(last)
+            lgd[ts] = max(unf[ts], earlier)
+        earlier = max(earlier, 1 - pv(n))
+    return R, E, lgd, unf, last
+
+
+def _block(seed, cohorts=9, buckets=14):
+    """A small runoff block with gaps in the observation, zero balances and balances that come back."""
+    rng = np.random.default_rng(seed)
+    X = np.round(rng.uniform(0, 100, (cohorts, buckets)), 2)
+    X[rng.random(X.shape) < 0.15] = 0.0
+    obs = rng.random(X.shape) < 0.85
+    obs[:, 0] = True
+    X[~obs] = 0.0
+    cohort = np.array([20200131 + 100 * i for i in range(cohorts)], dtype=np.int32)
+    return RunoffBlock(cohort=cohort, X=X, obs=obs)
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_vintage_triangles_equal_the_definition_even_on_awkward_data(seed):
+    block = _block(seed)
+    keep = np.random.default_rng(seed + 100).random(len(block.cohort)) < 0.6
+    tri = vintage_triangles(block, keep, 0.1771)
+    R, E, lgd, unf, last = _triangles_by_loop(block, keep, 0.1771)
+    np.testing.assert_allclose(tri.E, E, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(tri.R, R, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(tri.lgd_file, lgd, atol=1e-12)
+    np.testing.assert_allclose(tri.lgd_unfloored, unf, atol=1e-12)
+    assert tri.last_obs_file == last
+
+
 @pytest.mark.parametrize("name", ZIP_NAMES)
-def test_rebuild_with_every_vintage_equals_the_file(name):
+def test_triangles_from_every_vintage_equal_the_file(name):
     data = load_zip(name)
     assert data.runoff_status == {"ok": True, "reason": ""}
     for ev in data.event_types:
         file_tri = data.triangles(ev)
         block = data.runoff[ev]
-        rows = rebuild_rows(block, np.ones(len(block.cohort), dtype=bool), file_tri.implied_rate)
-        tri = RecoveryData(category="", meta={}, event_types=[ev], raw={ev: rows}).triangles(ev)
+        tri = vintage_triangles(block, np.ones(len(block.cohort), dtype=bool), file_tri.implied_rate)
         np.testing.assert_allclose(tri.R, file_tri.R, atol=1e-12)
         np.testing.assert_allclose(tri.E, file_tri.E, rtol=1e-12)
         ok = ~np.isnan(file_tri.lgd_file)
         np.testing.assert_allclose(tri.lgd_file[ok], file_tri.lgd_file[ok], atol=1e-12)
         np.testing.assert_allclose(tri.lgd_unfloored[ok], file_tri.lgd_unfloored[ok], atol=1e-12)
         assert tri.last_obs_file == file_tri.last_obs_file
-
-
-def test_vectorised_rebuild_equals_the_loop_reference(zip44):
-    block = zip44.runoff["Lifetime"]
-    rng = np.random.default_rng(7)
-    keep = rng.random(len(block.cohort)) < 0.5
-    fast = rebuild_rows(block, keep, 0.1771)
-    slow = rebuild_rows_slow(block, keep, 0.1771)
-    assert fast.shape == slow.shape
-    np.testing.assert_allclose(fast, slow, rtol=1e-12, atol=1e-12)
 
 
 def test_start_before_the_first_vintage_is_the_same_as_no_filter(zip44):
@@ -234,7 +273,9 @@ def test_vintage_years_resolves_per_zip():
 def test_filter_changes_the_triangle_and_the_lgd(zip44):
     base = compute(zip44, Params(method=1))
     r = compute(zip44, Params(method=1, vintage_years=5))
-    assert r.config["vintage_start_effective"] == "2021-06" and r.config["cohorts_included"] == 18
+    # five years back from the report date (the runoff data run to 2026-06), not from the newest vintage
+    assert r.config["report_month"] == "2026-06"
+    assert r.config["vintage_start_effective"] == "2021-07" and r.config["cohorts_included"] == 18
     assert r.config["opening_exposure"] < base.config["opening_exposure"]
     assert r.averages["lgd_file"] != base.averages["lgd_file"]
     # the rebuilt subset's own LGD is reproduced exactly (the tie-out is zero by construction)

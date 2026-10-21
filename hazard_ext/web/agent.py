@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ..engine.params import FIELDS, Params, merge_params
+from ..engine.params import Params, merge_params
 
 log = logging.getLogger("hazard_ext")
 
@@ -37,6 +37,8 @@ GLOSSARY = """Parameters of a scenario (the JSON key, then what people call it):
 - vintage_years: "last N years of vintages", "vintages from the last 10 years" (an integer); vintage_start: "vintages
   from 2016-08", a month as "YYYY-MM". Set one or the other, never both; null = all vintages. A zip needs vintage
   data (vintage_filter_available in get_state); otherwise say the zip must be uploaded again.
+- report_date: "report date", "reporting period" as "YYYY-MM". "Last N years" counts back from it; null = the
+  last month in the zip's runoff data (report_month in get_state).
 Zips are also called cohorts or categories; a zip's category is its label (11, 15, 22, 23, 25, 44, ALL).
 """
 
@@ -148,7 +150,7 @@ class AgentContext:
                 merged = merge_params(s["params"], {**current_override, **changes})
             else:
                 merged = merge_params({**s["params"], **changes})
-                for zn, ov in s["overrides"].items():          # existing overrides must still be valid
+                for ov in s["overrides"].values():             # existing overrides must still be valid
                     merge_params({**s["params"], **changes}, ov)
         except (ValidationError, ValueError) as exc:
             return {"error": "Invalid value: " + str(exc).splitlines()[0]}
@@ -212,7 +214,3 @@ def run_agent(client, model: str, history: list[dict], ctx: AgentContext, view: 
             break
     reply = "\n\n".join(reply_parts).strip() or "I have nothing to add."
     return {"reply": reply, "proposals": ctx.proposals, "usage": usage}
-
-
-def param_label(name: str) -> str:
-    return name

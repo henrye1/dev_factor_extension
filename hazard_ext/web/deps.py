@@ -8,7 +8,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import ROLES, Project, ProjectMember, User
+from .models import ROLES, Dataset, Project, ProjectMember, Result, Scenario, User
 from .security import COOKIE_NAME, CSRF_HEADER, CSRF_VALUE
 
 
@@ -73,3 +73,30 @@ def project_access(min_role: str = "viewer"):
         return access
 
     return dep
+
+
+
+def scenario_or_404(db: Session, pid: int, sid: int) -> Scenario:
+    """A scenario of the project, or 404."""
+    s = db.get(Scenario, sid)
+    if s is None or s.project_id != pid:
+        raise HTTPException(404, "Scenario not found")
+    return s
+
+
+def dataset_or_404(db: Session, pid: int, did: int) -> Dataset:
+    """A zip of the project, or 404."""
+    d = db.get(Dataset, did)
+    if d is None or d.project_id != pid:
+        raise HTTPException(404, "Zip not found")
+    return d
+
+
+def result_or_404(db: Session, pid: int, sid: int, did: int) -> Result:
+    """The stored result of a scenario on a zip of the project, or 404."""
+    scenario_or_404(db, pid, sid)
+    dataset_or_404(db, pid, did)
+    r = db.get(Result, (sid, did))
+    if r is None:
+        raise HTTPException(404, "This scenario has not been run for this zip")
+    return r

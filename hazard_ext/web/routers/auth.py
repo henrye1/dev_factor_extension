@@ -20,6 +20,14 @@ def user_out(u: User) -> dict:
             "is_active": u.is_active, "created_at": iso(u.created_at)}
 
 
+def _set_session_cookie(request: Request, response: Response, user: User) -> None:
+    settings = request.app.state.settings
+    response.set_cookie(
+        COOKIE_NAME, request.app.state.signer.make(user.id, user.password_hash, user.session_version),
+        max_age=settings.session_hours * 3600, httponly=True, samesite="lax",
+        secure=settings.cookie_secure, path="/")
+
+
 def norm_email(email: str) -> str:
     email = email.strip().lower()
     if "@" not in email or len(email) < 3 or " " in email:
@@ -50,11 +58,7 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
         addr_throttle.fail(addr_key)
         raise HTTPException(401, "Email or password is incorrect")
     throttle.reset(email_key)
-    settings = request.app.state.settings
-    response.set_cookie(
-        COOKIE_NAME, request.app.state.signer.make(user.id, user.password_hash, user.session_version),
-        max_age=settings.session_hours * 3600, httponly=True, samesite="lax",
-        secure=settings.cookie_secure, path="/")
+    _set_session_cookie(request, response, user)
     return user_out(user)
 
 
@@ -93,11 +97,7 @@ def change_password(body: PasswordIn, request: Request, response: Response,
     user = db.get(User, user.id)
     user.password_hash = hash_password(body.new)
     db.commit()
-    settings = request.app.state.settings
-    response.set_cookie(                        # keep this browser signed in; others are signed out
-        COOKIE_NAME, request.app.state.signer.make(user.id, user.password_hash, user.session_version),
-        max_age=settings.session_hours * 3600, httponly=True, samesite="lax",
-        secure=settings.cookie_secure, path="/")
+    _set_session_cookie(request, response, user)   # keep this browser signed in; others are signed out
     return {"ok": True}
 
 

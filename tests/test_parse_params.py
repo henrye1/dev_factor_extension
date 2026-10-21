@@ -41,6 +41,7 @@ def test_zip_profile(name):
     assert prof["opening_exposure"] > 0
     assert prof["has_runoff"] is True and prof["vintage_filter"] is True and prof["cohort_count"] > 0
     assert prof["cohort_first"] < prof["cohort_last"]
+    assert prof["report_month"] >= prof["cohort_last"]           # every vintage is followed to the report date
 
 
 @pytest.mark.parametrize("name", ZIP_NAMES)
@@ -183,6 +184,13 @@ def test_override_is_judged_against_its_scenario_not_the_defaults():
 def test_parameters_are_bounded_and_finite(bad):
     with pytest.raises(ValueError):
         Params(**bad)
+
+
+def test_report_date_parameter():
+    assert Params(report_date="2026-07-31").report_date == "2026-07"
+    assert Params(report_date="").report_date is None
+    with pytest.raises(ValueError, match="report_date"):
+        Params(report_date="July 2026")
 
 
 # -------------------------------------------------------------------- curves
