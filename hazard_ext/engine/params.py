@@ -41,7 +41,10 @@ class Params(BaseModel):
     vintage_start: Optional[str] = Field(None, max_length=10,
                                          description="Include default vintages from this month (YYYY-MM); blank = all vintages")
     vintage_years: Optional[int] = Field(None, ge=1, le=50,
-                                         description="Include vintages within the last N years of the zip's latest vintage; blank = all")
+                                         description="Include vintages within the last N years up to the report date; blank = all")
+    report_date: Optional[str] = Field(None, max_length=10,
+                                       description="Report month (YYYY-MM) that 'last N years' counts back from; "
+                                                   "blank = the last month in the zip's runoff data (its LgdMaxDate)")
 
     @model_validator(mode="after")
     def _check(self):
@@ -49,22 +52,24 @@ class Params(BaseModel):
             raise ValueError("min_exposure as a percentage cannot exceed 100")
         if isinstance(self.vintage_start, str):
             self.vintage_start = normalise_month(self.vintage_start)
+        if isinstance(self.report_date, str):
+            self.report_date = normalise_month(self.report_date, "report_date")
         if self.vintage_start is not None and self.vintage_years is not None:
             raise ValueError("Choose either a vintage start month or a number of years, not both")
         return self
 
 
-def normalise_month(text: str) -> str | None:
+def normalise_month(text: str, name: str = "vintage_start") -> str | None:
     """'2016-08' or '2016-08-31' -> '2016-08'. Blank -> None."""
     text = text.strip()
     if not text:
         return None
     m = _MONTH.match(text)
     if not m:
-        raise ValueError("vintage_start must be a month written as YYYY-MM")
+        raise ValueError(f"{name} must be a month written as YYYY-MM")
     year, month = int(m.group(1)), int(m.group(2))
     if not (1900 <= year <= 2100 and 1 <= month <= 12):
-        raise ValueError("vintage_start must be a month between 1900-01 and 2100-12")
+        raise ValueError(f"{name} must be a month between 1900-01 and 2100-12")
     return f"{year:04d}-{month:02d}"
 
 

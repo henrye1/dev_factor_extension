@@ -168,7 +168,7 @@ export async function projectView(pid, ctx) {
     { label: "LGD in file (TermStep 1)", key: "profile", num: true, fmt: (p) => tieOutCell(p.tie_out) },
     { label: "Opening exposure", key: "profile", num: true, fmt: (p) => fmt.moneyShort(p.opening_exposure) },
     { label: "LGD window", key: "parameters", fmt: (p) => (p.LgdMinDate ? `${p.LgdMinDate} to ${p.LgdMaxDate}` : "–") },
-    { label: "Vintages", key: "profile", fmt: (p) => p.vintage_filter ? `${p.cohort_first} to ${p.cohort_last} (${p.cohort_count})`
+    { label: "Vintages", key: "profile", fmt: (p) => p.vintage_filter ? `${p.cohort_first} to ${p.cohort_last} (${p.cohort_count})${p.report_month ? `, report date ${p.report_month}` : ""}`
         : h("span", { class: "muted", title: p.has_runoff ? p.vintage_reason : "" }, p.has_runoff ? "Filter unavailable" : "Re-upload the zip to enable the vintage filter") },
     ...(canEdit ? [{ label: "", key: "id", fmt: (_, d) => h("div", { class: "actions" },
         h("button", { type: "button", onclick: () => editZip(d) }, "Edit"),

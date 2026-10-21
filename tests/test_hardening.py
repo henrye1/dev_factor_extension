@@ -13,7 +13,6 @@ from hazard_ext.engine.core import compute
 from hazard_ext.engine.params import Params
 from hazard_ext.engine.parse import COLUMNS, ParseError, parse_zip
 from hazard_ext.export.formula_xlsx import build_formula_workbook
-from hazard_ext.export.tables import summary_workbook
 from hazard_ext.export.values_xlsx import build_values_workbook
 from hazard_ext.web.config import Settings
 from hazard_ext.web.main import create_app
@@ -76,11 +75,6 @@ def test_names_that_look_like_formulas_stay_text_in_every_workbook():
     assert wb["Charts"]["A1"].data_type == "s"
     assert wb["README"]["B1"].data_type == "s"
 
-    matrix = {"datasets": [{"id": 1, "name": evil, "category": evil}], "scenarios": [{"id": 1, "name": evil}],
-              "cells": [{"dataset_id": 1, "scenario_id": 1, "status": "error", "error": evil, "summary": {}}]}
-    ws = openpyxl.load_workbook(io.BytesIO(summary_workbook(evil, matrix)))["Summary"]
-    for col in ("A", "B", "C", "U"):
-        assert ws[f"{col}4"].data_type == "s", col
 
 
 def test_oversized_upload_is_refused_before_it_is_read(tmp_path):

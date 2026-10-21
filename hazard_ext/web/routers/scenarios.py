@@ -3,19 +3,20 @@ from __future__ import annotations
 
 from typing import Optional
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...engine.applied import implied_lgd, rate_at, to_face, to_outstanding
 from ...engine.core import EngineError, curve_parameters
 from ...engine.params import DEFAULTS, Params, clean_overrides, merge_params
 from ...engine.parse import ParseError
-from ..deps import Access, csrf_guard, current_user, get_db, project_access
-from ..models import iso, Dataset, Result, Scenario, ScenarioOverride, User, utcnow
+from ..deps import (Access, csrf_guard, current_user, dataset_or_404, get_db, project_access, result_or_404,
+                    scenario_or_404)
+from ..models import Dataset, Result, Scenario, ScenarioOverride, User, iso, utcnow
 from ..runner import applied_curves, is_legacy_result, mark_stale, recompute, run_one
-from ...engine.applied import implied_lgd, rate_at, to_face, to_outstanding
-import numpy as np
 from ..storage import StorageError
 
 router = APIRouter(prefix="/api", dependencies=[Depends(csrf_guard)])
@@ -35,18 +36,6 @@ def _full_params(params: dict | None) -> dict:
         raise HTTPException(422, _validation_text(exc)) from None
 
 
-def _scenario(db: Session, pid: int, sid: int) -> Scenario:
-    s = db.get(Scenario, sid)
-    if s is None or s.project_id != pid:
-        raise HTTPException(404, "Scenario not found")
-    return s
-
-
-def _dataset(db: Session, pid: int, did: int) -> Dataset:
-    d = db.get(Dataset, did)
-    if d is None or d.project_id != pid:
-        raise HTTPException(404, "Zip not found")
-    return d
 
 
 def result_meta(r: Result | None) -> dict:
@@ -120,13 +109,13 @@ def create_scenario(body: ScenarioIn, access: Access = Depends(project_access("e
 
 @router.get("/projects/{pid}/scenarios/{sid}")
 def get_scenario(sid: int, access: Access = Depends(project_access()), db: Session = Depends(get_db)):
-    return scenario_out(_scenario(db, access.project.id, sid), detail=True)
+    return scenario_out(scenario_or_404(db, access.project.id, sid), detail=True)
 
 
 @router.put("/projects/{pid}/scenarios/{sid}")
 def update_scenario(sid: int, body: ScenarioPut, access: Access = Depends(project_access("editor")),
                     db: Session = Depends(get_db)):
-    s = _scenario(db, access.project.id, sid)
+    s = scenario_or_404(db, access.project.id, sid)
     if body.name is not None:
         s.name = _check_name(db, s.project_id, body.name, ignore_id=s.id)
     if body.description is not None:
@@ -148,7 +137,7 @@ def update_scenario(sid: int, body: ScenarioPut, access: Access = Depends(projec
 
 @router.delete("/projects/{pid}/scenarios/{sid}")
 def delete_scenario(sid: int, access: Access = Depends(project_access("editor")), db: Session = Depends(get_db)):
-    db.delete(_scenario(db, access.project.id, sid))
+    db.delete(scenario_or_404(db, access.project.id, sid))
     db.commit()
     return {"ok": True}
 
@@ -160,7 +149,7 @@ class CloneIn(BaseModel):
 @router.post("/projects/{pid}/scenarios/{sid}/clone", status_code=201)
 def clone_scenario(sid: int, body: CloneIn, access: Access = Depends(project_access("editor")),
                    db: Session = Depends(get_db)):
-    src = _scenario(db, access.project.id, sid)
+    src = scenario_or_404(db, access.project.id, sid)
     s = Scenario(project_id=src.project_id, name=_check_name(db, src.project_id, body.name),
                  description=src.description, params=dict(src.params), created_by=access.user.id)
     s.overrides = [ScenarioOverride(dataset_id=o.dataset_id, params=dict(o.params)) for o in src.overrides]
@@ -178,8 +167,8 @@ class OverrideIn(BaseModel):
 def set_override(sid: int, did: int, body: OverrideIn, access: Access = Depends(project_access("editor")),
                  db: Session = Depends(get_db)):
     """Replace this zip's override. An empty object removes it."""
-    s = _scenario(db, access.project.id, sid)
-    d = _dataset(db, access.project.id, did)
+    s = scenario_or_404(db, access.project.id, sid)
+    d = dataset_or_404(db, access.project.id, did)
     try:
         params = clean_overrides(body.params)
         merge_params(s.params, params)
@@ -212,9 +201,9 @@ def run_scenario(sid: int, body: RunIn, request: Request,
                  access: Access = Depends(project_access("editor")), db: Session = Depends(get_db)):
     """Run the scenario on one zip, or on every zip in the project."""
     pid = access.project.id
-    s = _scenario(db, pid, sid)
+    s = scenario_or_404(db, pid, sid)
     if body.dataset_id is not None:
-        datasets = [_dataset(db, pid, body.dataset_id)]
+        datasets = [dataset_or_404(db, pid, body.dataset_id)]
     else:
         datasets = list(db.execute(select(Dataset).where(Dataset.project_id == pid).order_by(Dataset.name)).scalars())
     if not datasets:
@@ -252,11 +241,14 @@ def matrix(access: Access = Depends(project_access()), db: Session = Depends(get
     datasets = list(db.execute(select(Dataset).where(Dataset.project_id == pid).order_by(Dataset.name)).scalars())
     results = {(r.scenario_id, r.dataset_id): r for r in db.execute(
         select(Result).join(Scenario, Scenario.id == Result.scenario_id).where(Scenario.project_id == pid)).scalars()}
+    overridden = {(sid, did) for sid, did in db.execute(
+        select(ScenarioOverride.scenario_id, ScenarioOverride.dataset_id)
+        .join(Scenario, Scenario.id == ScenarioOverride.scenario_id).where(Scenario.project_id == pid))}
     return {
         "scenarios": [{"id": s.id, "name": s.name} for s in scenarios],
         "datasets": [{"id": d.id, "name": d.name, "category": d.category} for d in datasets],
         "cells": [{"scenario_id": s.id, "dataset_id": d.id,
-                   "has_override": any(o.dataset_id == d.id for o in s.overrides),
+                   "has_override": (s.id, d.id) in overridden,
                    **result_meta(results.get((s.id, d.id)))}
                   for s in scenarios for d in datasets],
     }
@@ -286,18 +278,11 @@ def series(access: Access = Depends(project_access()), db: Session = Depends(get
 
 
 # --------------------------------------------------------------------- results
-def _result(db: Session, pid: int, sid: int, did: int) -> Result:
-    _scenario(db, pid, sid)
-    _dataset(db, pid, did)
-    r = db.get(Result, (sid, did))
-    if r is None:
-        raise HTTPException(404, "This scenario has not been run for this zip")
-    return r
 
 
 @router.get("/projects/{pid}/results/{sid}/{did}")
 def get_result(sid: int, did: int, access: Access = Depends(project_access()), db: Session = Depends(get_db)):
-    r = _result(db, access.project.id, sid, did)
+    r = result_or_404(db, access.project.id, sid, did)
     return {**result_meta(r), "effective_params": r.effective_params, "payload": r.payload,
             "scenario": {"id": r.scenario.id, "name": r.scenario.name},
             "dataset": {"id": r.dataset.id, "name": r.dataset.name, "category": r.dataset.category}}
@@ -316,7 +301,7 @@ def get_curve_data(sid: int, did: int, request: Request, ts: int = 1,
                    access: Access = Depends(project_access()), db: Session = Depends(get_db)):
     """Observed and extended RecoveryPct along one TermStep row, plus the client's applied
     curve rolled forward to that TermStep when the project has one for the zip."""
-    r = _result(db, access.project.id, sid, did)
+    r = result_or_404(db, access.project.id, sid, did)
     try:
         out = recompute(db, request.app.state.cache, r).curve(ts)
     except (EngineError, ParseError, StorageError, ValueError) as exc:
@@ -338,7 +323,7 @@ def compare_curves(sid: int, did: int, request: Request, ts: int = 1, basis: str
     outstanding (share of what is still outstanding at the start of each step)."""
     if basis not in ("face", "outstanding"):
         raise HTTPException(422, "basis must be face or outstanding")
-    r = _result(db, access.project.id, sid, did)
+    r = result_or_404(db, access.project.id, sid, did)
     try:
         res = recompute(db, request.app.state.cache, r)
         cur = res.curve(ts)
@@ -385,7 +370,7 @@ def get_applied_comparison(sid: int, did: int, access: Access = Depends(project_
                            db: Session = Depends(get_db)):
     """The LGD implied by the client's applied curve at every TermStep of the result's LGD table,
     discounted at the rate the result used and counting buckets to its MaxBucket."""
-    r = _result(db, access.project.id, sid, did)
+    r = result_or_404(db, access.project.id, sid, did)
     row, c_face = _applied_for(db, r)
     if row is None:
         return {"available": False, "label": r.dataset.category}

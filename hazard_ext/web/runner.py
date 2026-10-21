@@ -8,9 +8,13 @@ from collections import OrderedDict
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+import numpy as np
+
+from ..engine.applied import to_face
 from ..engine.core import EngineError, ExtensionResult, compute
 from ..engine.params import Params, load_params, merge_params
 from ..engine.parse import ParseError, RecoveryData
+from ..export.tables import vintage_note
 from .models import ClientCurve, Dataset, Result, Scenario, ScenarioOverride, User, utcnow
 from .storage import BlobStore, StorageError
 
@@ -51,14 +55,14 @@ def applied_curves(db: Session, project_id: int) -> dict[str, ClientCurve]:
     return {row.label: row for row in rows}
 
 
+def applied_face_curves(db: Session, project_id: int) -> dict[str, np.ndarray]:
+    """The project's applied curves by label, converted to the face basis."""
+    return {label: to_face(np.asarray(row.values, dtype=float), row.basis)
+            for label, row in applied_curves(db, project_id).items()}
+
+
 def effective_params(scenario: Scenario, override: ScenarioOverride | None) -> Params:
     return merge_params(scenario.params, override.params if override else None)
-
-
-def vintage_text(cfg: dict) -> str:
-    if not cfg.get("vintage_filter"):
-        return ""
-    return f"from {cfg['vintage_start_effective']} ({cfg['cohorts_included']} of {cfg['cohorts_total']} cohorts)"
 
 
 def summarise(res: ExtensionResult) -> dict:
@@ -71,7 +75,7 @@ def summarise(res: ExtensionResult) -> dict:
         "uplift_simple": a["uplift_simple"], "exposure_total": a["exposure_total"],
         "method": c["method"], "method_label": c["method_label"],
         "lam": c["lam"], "gam": c["gam"], "mu": c["mu"], "sigma": c["sigma"], "rate": c["rate"],
-        "vintage_filter": bool(c["vintage_filter"]), "vintages": vintage_text(c),
+        "vintage_filter": bool(c["vintage_filter"]), "vintages": vintage_note(c), "report_month": c["report_month"],
         "n": j["n"], "warnings": len(j["warnings"]),
         # the final LGD series, so the comparison charts need not load the whole payload
         "lgd_final": j["lgd_ts"]["lgd_final"],
@@ -161,6 +165,22 @@ def migrate_fit_solver(session_factory) -> dict:
     if stamped:
         log.info("Fit-solver migration: %d scenario(s) stamped with the log-linear solver", stamped)
     return {"stamped": stamped}
+
+
+def migrate_report_date(session_factory) -> dict:
+    """'Last N years' now counts back from the report date (20 October 2026), not from the zip's newest
+    vintage. A result that used it and was stored before (no report_month in its summary) may have a
+    different window now, so it is marked out of date. Idempotent."""
+    stale = 0
+    with session_factory() as db:
+        for r in db.execute(select(Result).where(Result.status == "ok", Result.stale.is_(False))).scalars():
+            if (r.effective_params or {}).get("vintage_years") is not None and "report_month" not in (r.summary or {}):
+                r.stale = True
+                stale += 1
+        db.commit()
+    if stale:
+        log.info("Report-date migration: %d result(s) on 'last N years' marked out of date", stale)
+    return {"stale": stale}
 
 
 def migrate_three_methods(session_factory) -> dict:

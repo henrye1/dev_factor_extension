@@ -2,7 +2,7 @@
 
 Three members of the zip are used: ``lgd_recovery.csv`` (the recovery triangle over all default
 vintages), ``runoff_triangle.csv`` (exposure by default vintage and month, from which the
-triangle is rebuilt for a chosen set of vintages) and ``debug.json``.
+triangles are built for a chosen set of vintages, and which fixes the report date) and ``debug.json``.
 """
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from typing import BinaryIO
 
 import numpy as np
 import pandas as pd
+
+from ._util import max_abs, weighted_mean
 
 COLUMNS = [
     "EventType", "TermStep", "TermDays", "ExposureBucket", "BucketIndex",
@@ -116,89 +118,80 @@ def replica_lgd(tri: Triangles) -> np.ndarray:
     return out
 
 
-def rebuild_rows(block: RunoffBlock, keep: np.ndarray, rate: float) -> np.ndarray:
-    """Rebuild the lgd_recovery rows for the vintages flagged in ``keep``.
-
-    For TermStep ts and bucket b >= ts, over the kept vintages c that have a runoff row at
-    bucket b and a positive exposure at bucket ts-1:
-        ExposureBucket = Σ X[c, ts-1], PrevColSum = Σ X[c, b-1], ThisColSum = Σ X[c, b],
-        RecoveryPct = (PrevColSum − ThisColSum) ÷ ExposureBucket (0 when the exposure is 0).
-    The row set is ts = 1..B+1 and b = ts..B+1 where B is the highest runoff bucket, as in the
-    file. DiscountIndex = b − ts + 1, DiscountFactor = (1+r)^(−index/12), CumulativeSumPV runs
-    along the row and LGD = 1 − CumulativeSumPV floored at the previous TermStep's final LGD.
-    Returns the 12 numeric columns in file order (TermStep .. LGD).
-    """
+def _vintage_sums(block: RunoffBlock, keep: np.ndarray):
+    """ExposureBucket, PrevColSum and ThisColSum by [ts, b] for the kept vintages, as the risk suite
+    builds lgd_recovery: for TermStep ts and bucket b >= ts, over the kept vintages that still hold a
+    balance at bucket ts−1 and are observed at bucket b, the sums of their balances at ts−1, b−1 and b.
+    Zero below the diagonal and in row / column 0."""
     C, K = block.X.shape
-    n = K                                            # B + 1
-    keep = np.asarray(keep, dtype=bool)
-    Xp = np.zeros((C, n + 1))
-    Xp[:, :K] = block.X
-    Op = np.zeros((C, n + 1))
-    Op[:, :K] = block.obs
-    P = ((Xp > 0) & keep[:, None]).astype(float)     # P[c, j]: vintage c counts at ts = j + 1
-    A = Xp * P
-    Q = np.zeros_like(Xp)
-    Q[:, 1:] = Xp[:, :-1] * Op[:, 1:]
-    E_ = A.T @ Op                                    # [ts-1, b]
-    Prev_ = P.T @ Q
-    This_ = P.T @ (Xp * Op)
+    n = K                                            # TermSteps 1..B+1, B the highest runoff bucket
+    X = np.zeros((C, n + 1))
+    X[:, :K] = block.X
+    O = np.zeros((C, n + 1))
+    O[:, :K] = block.obs
+    P = ((X > 0) & np.asarray(keep, dtype=bool)[:, None]).astype(float)[:, :n]   # counts at ts = j + 1
+    prev_b = np.zeros_like(X)
+    prev_b[:, 1:] = X[:, :-1] * O[:, 1:]
+    upper = np.triu(np.ones((n + 1, n + 1), dtype=bool))
+    upper[0, :] = upper[:, 0] = False
+    sums = []
+    for M in ((X[:, :n] * P).T @ O, P.T @ prev_b, P.T @ (X * O)):
+        out = np.zeros((n + 1, n + 1))
+        out[1:] = M
+        sums.append(np.where(upper, out, 0.0))
+    return n, upper, sums[0], sums[1], sums[2]
 
-    ts_all = np.repeat(np.arange(1, n + 1), np.arange(n, 0, -1))
-    b_all = np.concatenate([np.arange(ts, n + 1) for ts in range(1, n + 1)])
-    E = E_[ts_all - 1, b_all]
-    prev = Prev_[ts_all - 1, b_all]
-    this = This_[ts_all - 1, b_all]
+
+def _discounting(R: np.ndarray, upper: np.ndarray, rate: float):
+    """DiscountFactor (1 + r)^(−(b − ts + 1)/12) and CumulativeSumPV along each TermStep row."""
+    ts = np.arange(R.shape[0])[:, None]
+    b = np.arange(R.shape[1])[None, :]
+    df = np.where(upper, (1.0 + rate) ** (-(b - ts + 1.0) / 12.0), 0.0)
+    return df, np.cumsum(R * df, axis=1)
+
+
+def _earlier_lgd(cum: np.ndarray, n: int) -> np.ndarray:
+    """Per ts, the largest final LGD of the earlier TermSteps: the risk suite floors each LGD at it."""
+    final = 1.0 - cum[:, n]
+    return np.r_[-np.inf, -np.inf, np.maximum.accumulate(final[1:])[:-1]]
+
+
+def vintage_triangles(block: RunoffBlock, keep: np.ndarray, rate: float) -> Triangles:
+    """The observed triangles for the vintages flagged in ``keep``, built from the runoff data:
+    RecoveryPct = (PrevColSum − ThisColSum) ÷ ExposureBucket (0 when there is no exposure). The LGD is
+    1 − CumulativeSumPV, floored at the earlier TermSteps' LGD, read at the last observed bucket, as
+    the file's LGD column is."""
+    n, upper, E, prev, this = _vintage_sums(block, keep)
     with np.errstate(divide="ignore", invalid="ignore"):
-        R = np.where(E > 0, (prev - this) / E, 0.0)
-    idx = (b_all - ts_all + 1).astype(float)
-    df = (1.0 + rate) ** (-idx / 12.0)
-    contrib = R * df
-    cum = np.cumsum(contrib)
-    starts = np.cumsum(np.r_[0, np.arange(n, 1, -1)])             # first row of each ts
-    cum = cum - np.repeat(cum[starts] - contrib[starts], np.arange(n, 0, -1))
-    ends = starts + np.arange(n, 0, -1) - 1
-    final_unf = 1.0 - cum[ends]
-    final = np.maximum.accumulate(final_unf)
-    prev_final = np.r_[-np.inf, final[:-1]]
-    lgd = np.maximum(1.0 - cum, np.repeat(prev_final, np.arange(n, 0, -1)))
-    out = np.empty((len(ts_all), len(NUM_COLUMNS)))
-    out[:, _IX["TermStep"]] = ts_all
-    out[:, _IX["TermDays"]] = (ts_all - 1) * 30
-    out[:, _IX["ExposureBucket"]] = E
-    out[:, _IX["BucketIndex"]] = b_all
-    out[:, _IX["PrevColSum"]] = prev
-    out[:, _IX["ThisColSum"]] = this
-    out[:, _IX["RecoveryPct"]] = R
-    out[:, _IX["DiscountIndex"]] = idx
-    out[:, _IX["DiscountFactor"]] = df
-    out[:, _IX["Contribution"]] = contrib
-    out[:, _IX["CumulativeSumPV"]] = cum
-    out[:, _IX["LGD"]] = lgd
+        R = np.where(upper & (E > 0), (prev - this) / E, 0.0)
+    seen = np.nonzero((E > 0).any(axis=0))[0]
+    last_obs = int(seen.max()) if seen.size else 0
+    _, cum = _discounting(R, upper, rate)
+    rows = np.arange(1, min(last_obs, n) + 1)
+    lgd_unf = np.full(n + 1, np.nan)
+    lgd_unf[rows] = 1.0 - cum[rows, last_obs]
+    lgd_file = np.full(n + 1, np.nan)
+    lgd_file[rows] = np.maximum(lgd_unf[rows], _earlier_lgd(cum, n)[rows])
+    return Triangles(n=n, R=R, E=E, lgd_file=lgd_file, lgd_unfloored=lgd_unf, last_obs_file=last_obs,
+                     implied_rate=rate)
+
+
+def vintage_rows(block: RunoffBlock, keep: np.ndarray, rate: float) -> np.ndarray:
+    """The lgd_recovery rows (the 12 numeric columns, TermStep .. LGD) for the kept vintages, for the
+    formula workbook's Raw_Debug sheet: one row per TermStep ts and bucket b = ts..B+1."""
+    n, upper, E, prev, this = _vintage_sums(block, keep)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        R = np.where(upper & (E > 0), (prev - this) / E, 0.0)
+    df, cum = _discounting(R, upper, rate)
+    lgd = np.maximum(1.0 - cum, _earlier_lgd(cum, n)[:, None])
+    ts, b = np.nonzero(upper)                         # row-major: by TermStep, then bucket
+    out = np.empty((len(ts), len(NUM_COLUMNS)))
+    for name, col in (("TermStep", ts), ("TermDays", (ts - 1) * 30), ("ExposureBucket", E[ts, b]),
+                      ("BucketIndex", b), ("PrevColSum", prev[ts, b]), ("ThisColSum", this[ts, b]),
+                      ("RecoveryPct", R[ts, b]), ("DiscountIndex", b - ts + 1), ("DiscountFactor", df[ts, b]),
+                      ("Contribution", (R * df)[ts, b]), ("CumulativeSumPV", cum[ts, b]), ("LGD", lgd[ts, b])):
+        out[:, _IX[name]] = col
     return out
-
-
-def rebuild_rows_slow(block: RunoffBlock, keep: np.ndarray, rate: float) -> np.ndarray:
-    """Loop reference implementation of ``rebuild_rows`` (used by the tests)."""
-    C, K = block.X.shape
-    n = K
-    rows = []
-    prev_final = -np.inf
-    for ts in range(1, n + 1):
-        cum = 0.0
-        for b in range(ts, n + 1):
-            e = prev = this = 0.0
-            for c in range(C):
-                if keep[c] and b < K and block.obs[c, b] and block.X[c, ts - 1] > 0:
-                    e += block.X[c, ts - 1]
-                    prev += block.X[c, b - 1]
-                    this += block.X[c, b]
-            r = (prev - this) / e if e > 0 else 0.0
-            idx = b - ts + 1
-            df = (1.0 + rate) ** (-idx / 12.0)
-            cum += r * df
-            rows.append([ts, (ts - 1) * 30, e, b, prev, this, r, idx, df, r * df, cum, max(1.0 - cum, prev_final)])
-        prev_final = max(prev_final, 1.0 - cum)
-    return np.array(rows, dtype=float)
 
 
 @dataclass
@@ -249,13 +242,29 @@ class RecoveryData:
         return {"vintage_first": month_text(int(m.min())), "vintage_last": month_text(int(m.max())),
                 "cohorts_total": int(len(m))}
 
-    def resolve_vintages(self, event: str, vintage_start: str | None, vintage_years: int | None):
-        """Turn the two vintage parameters into one start month (yyyymm) or None for all vintages.
+    def report_month(self, event: str) -> int | None:
+        """The last month observed in the runoff data (yyyymm): every vintage is followed up to the
+        report date, so this is the risk suite's LgdMaxDate. None without runoff data."""
+        if event not in self.runoff:
+            return None
+        blk = self.runoff[event]
+        m = blk.months
+        idx = (m // 100) * 12 + m % 100 - 1 + np.where(blk.obs, np.arange(blk.obs.shape[1]), 0).max(axis=1)
+        last = int(idx.max())
+        return (last // 12) * 100 + last % 12 + 1
 
-        A start at or before the first vintage keeps every vintage and is treated as no filter.
-        Returns (start or None, info dict with the vintage window and exposure share)."""
+    def resolve_vintages(self, event: str, vintage_start: str | None, vintage_years: int | None,
+                         report_date: str | None = None):
+        """Turn the vintage parameters into one start month (yyyymm), or None for all vintages.
+
+        'Last N years' is the N × 12 months that end with the report month: ``report_date`` when
+        given, else the last month observed in the runoff data. A start at or before the first
+        vintage keeps every vintage and is treated as no filter.
+        Returns (start or None, info dict with the window, the report month and the exposure share)."""
+        report = month_int(report_date) if report_date else self.report_month(event)
         info = {**self.vintage_summary(event), "vintage_filter": False, "vintage_start_effective": None,
-                "cohorts_included": None, "exposure_share": None}
+                "cohorts_included": None, "exposure_share": None,
+                "report_month": month_text(report) if report else None}
         if info["cohorts_total"] is not None:
             info["cohorts_included"] = info["cohorts_total"]
             info["exposure_share"] = 1.0
@@ -265,10 +274,8 @@ class RecoveryData:
         months = block.months
         last = int(months.max())
         if vintage_years is not None:
-            y, m = last // 100 - int(vintage_years), last % 100 + 1
-            if m == 13:
-                y, m = y + 1, 1
-            start = y * 100 + m
+            y, m = report // 100 - int(vintage_years), report % 100 + 1
+            start = (y + 1) * 100 + 1 if m == 13 else y * 100 + m
         else:
             start = month_int(vintage_start)
         if start > last:
@@ -285,25 +292,22 @@ class RecoveryData:
         return start, info
 
     def triangles(self, event: str, vintage_start: int | None = None) -> Triangles:
-        """Observed triangles for an EventType; rebuilt from the runoff data for vintages from
-        ``vintage_start`` (yyyymm) when one is given, read from lgd_recovery when it is not."""
+        """Observed triangles for an EventType: read from lgd_recovery, or built from the runoff data
+        for the vintages from ``vintage_start`` (yyyymm)."""
         key = (event, vintage_start)
-        if key in self._tri_cache:
-            return self._tri_cache[key]
-        rate = self.implied_rate(event)
-        if vintage_start is None:
-            tri = _triangles_from_rows(self.block(event), rate)
-        else:
-            block = self.runoff_block(event)
-            rows = rebuild_rows(block, block.months >= vintage_start, rate)
-            tri = _triangles_from_rows(rows, rate)
-        self._tri_cache[key] = tri
-        return tri
+        if key not in self._tri_cache:
+            rate = self.implied_rate(event)
+            if vintage_start is None:
+                self._tri_cache[key] = _triangles_from_rows(self.block(event), rate)
+            else:
+                block = self.runoff_block(event)
+                self._tri_cache[key] = vintage_triangles(block, block.months >= vintage_start, rate)
+        return self._tri_cache[key]
 
     def rebuilt_block(self, event: str, vintage_start: int) -> np.ndarray:
-        """The rebuilt lgd_recovery rows (12 numeric columns) for vintages from ``vintage_start``."""
+        """The lgd_recovery rows for the vintages from ``vintage_start`` (yyyymm)."""
         block = self.runoff_block(event)
-        return rebuild_rows(block, block.months >= vintage_start, self.implied_rate(event))
+        return vintage_rows(block, block.months >= vintage_start, self.implied_rate(event))
 
     def implied_rate(self, event: str) -> float:
         a = self.block(event)
@@ -338,9 +342,7 @@ class RecoveryData:
                 self.runoff_status = {"ok": False, "reason": f"runoff_triangle has no block for EventType '{ev}'"}
                 return self.runoff_status
             file_tri = _triangles_from_rows(self.block(ev), self.implied_rate(ev))
-            block = self.runoff[ev]
-            rows = rebuild_rows(block, np.ones(len(block.cohort), dtype=bool), file_tri.implied_rate)
-            tri = _triangles_from_rows(rows, file_tri.implied_rate)
+            tri = self._all_vintages(ev, file_tri.implied_rate)
             problem = _compare_triangles(file_tri, tri)
             if problem:
                 self.runoff_status = {"ok": False, "reason": f"EventType {ev}: {problem}"}
@@ -366,21 +368,12 @@ class RecoveryData:
         s = slice(1, n + 1)
         rep = replica_lgd(tri)
         w = np.diagonal(tri.E)[s]
-        wsum = float(w.sum())
-
-        def wavg(col):
-            return float((w * np.nan_to_num(col, nan=0.0)).sum() / wsum) if wsum > 0 else float("nan")
-
-        def maxabs(x):
-            x = x[np.isfinite(x)]
-            return float(np.abs(x).max()) if x.size else 0.0
-
         floor_gap = tri.lgd_file[s] - tri.lgd_unfloored[s]
         runoff_tie = None
         if self.vintage_filter_available:
-            block = self.runoff[ev]
-            rows = rebuild_rows(block, np.ones(len(block.cohort), dtype=bool), tri.implied_rate)
-            runoff_tie = maxabs(replica_lgd(_triangles_from_rows(rows, tri.implied_rate))[s] - rep[s])
+            rebuilt = self._all_vintages(ev, tri.implied_rate)
+            runoff_tie = max_abs(replica_lgd(rebuilt)[s] - rep[s])
+
         def first(col):
             return float(col[1]) if n >= 1 and np.isfinite(col[1]) else None
 
@@ -388,14 +381,19 @@ class RecoveryData:
             "term_steps": n,
             "lgd_file_ts1": first(tri.lgd_file),      # the risk suite's LGD at term 0 days
             "lgd_replica_ts1": first(rep),
-            "lgd_file": wavg(tri.lgd_file[s]),
-            "lgd_replica": wavg(rep[s]),
-            "tie_max": maxabs(rep[s] - tri.lgd_unfloored[s]),
-            "tie_max_vs_file": maxabs(rep[s] - tri.lgd_file[s]),
+            "lgd_file": weighted_mean(w, tri.lgd_file[s]),
+            "lgd_replica": weighted_mean(w, rep[s]),
+            "tie_max": max_abs(rep[s] - tri.lgd_unfloored[s]),
+            "tie_max_vs_file": max_abs(rep[s] - tri.lgd_file[s]),
             "floor_count": int((floor_gap[np.isfinite(floor_gap)] > 1e-12).sum()),
-            "floor_max": maxabs(floor_gap),
+            "floor_max": max_abs(floor_gap),
             "runoff_tie_max": runoff_tie,
         }
+
+    def _all_vintages(self, event: str, rate: float) -> Triangles:
+        """The triangles built from the runoff data with every vintage kept."""
+        block = self.runoff[event]
+        return vintage_triangles(block, np.ones(len(block.cohort), dtype=bool), rate)
 
     def profile(self) -> dict:
         ev = self.event_types[0]
@@ -404,6 +402,7 @@ class RecoveryData:
         ts = a[:, _IX["TermStep"]].astype(int)
         opening = float(tri.E[1, 1]) if tri.n >= 1 else 0.0
         vint = self.vintage_summary(ev)
+        report = self.report_month(ev)
         return {
             "tie_out": self.tie_out(ev),
             "category": self.category,
@@ -424,6 +423,7 @@ class RecoveryData:
             "cohort_first": vint["vintage_first"],
             "cohort_last": vint["vintage_last"],
             "cohort_count": vint["cohorts_total"],
+            "report_month": month_text(report) if report else None,
         }
 
     # ----------------------------------------------------------- serialisation

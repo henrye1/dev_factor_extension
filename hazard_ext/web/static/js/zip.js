@@ -219,8 +219,9 @@ export async function zipView(pid, did, sid, ctx) {
   const hasLogn = avg.lgd_logn !== null && avg.lgd_logn !== undefined;
   const fileLabel = cfg.lgd_file_label || "Original LGD (file)";
   const vintageLine = cfg.vintage_filter
-    ? `Vintages: ${cfg.vintage_start_effective} to ${cfg.vintage_last} (${cfg.cohorts_included} of ${cfg.cohorts_total}, ${Math.round(cfg.exposure_share * 100)}% of exposure)`
+    ? `Vintages from ${cfg.vintage_start_effective} to ${cfg.report_month || cfg.vintage_last} (${cfg.cohorts_included} of ${cfg.cohorts_total}, ${Math.round(cfg.exposure_share * 100)}% of exposure)`
     : cfg.vintage_first ? `All vintages (${cfg.vintage_first} to ${cfg.vintage_last}, ${cfg.cohorts_total} cohorts)` : "All vintages";
+  if (cfg.report_month) head.querySelector(".sub").append(h("div", null, `Report date ${cfg.report_month}`));
   head.querySelector(".sub").append(h("div", null, vintageLine));
 
   // ---------------------------------------------------------------- notices

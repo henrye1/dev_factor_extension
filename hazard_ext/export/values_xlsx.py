@@ -1,53 +1,14 @@
 """Values-only Excel workbook for one zip under one scenario."""
 from __future__ import annotations
 
-import io
 import math
 
 import numpy as np
-import xlsxwriter
-from xlsxwriter.utility import xl_rowcol_to_cell
 
 from ..engine.core import ExtensionResult
+from ._xlsx import NAVY, build_xlsx, formats, write_value
 from .tables import (AVERAGE_LABELS, CONFIG_LABELS, LGD_TS_COLUMNS, PARAM_LABELS,
                      RESULT_COLUMNS, TAIL_COLUMNS, headed)
-
-NAVY = "#1F3A5F"
-
-
-def _formats(wb) -> dict:
-    return {
-        "title": wb.add_format({"bold": True, "font_size": 14, "font_color": NAVY}),
-        "bold": wb.add_format({"bold": True}),
-        "head": wb.add_format({"bold": True, "bg_color": NAVY, "font_color": "white",
-                               "text_wrap": True, "valign": "top", "border": 1}),
-        "note": wb.add_format({"italic": True, "font_color": "#555555"}),
-        "warn": wb.add_format({"font_color": "#9C5700", "bg_color": "#FFEB9C", "text_wrap": True}),
-        "int": wb.add_format({"num_format": "0"}),
-        "money": wb.add_format({"num_format": "#,##0"}),
-        "lgd": wb.add_format({"num_format": "0.0000"}),
-        "lgd6": wb.add_format({"num_format": "0.000000"}),
-        "sci": wb.add_format({"num_format": "0.00E+00"}),
-        "num": wb.add_format({"num_format": "0.000000"}),
-        "tri": wb.add_format({"num_format": "0.00000%"}),
-        "text": wb.add_format({}),
-    }
-
-
-def _write_value(ws, r, c, v, fmt=None):
-    if v is None:
-        return
-    if isinstance(v, (float, np.floating)):
-        if not math.isfinite(v):
-            return
-        ws.write_number(r, c, float(v), fmt)
-    elif isinstance(v, (int, np.integer)) and not isinstance(v, bool):
-        ws.write_number(r, c, int(v), fmt)
-    elif isinstance(v, bool):
-        ws.write_boolean(r, c, v, fmt)
-    else:
-        ws.write_string(r, c, str(v), fmt)        # never parsed as a formula
-
 
 def _table(ws, f, top, data: dict, columns) -> None:
     for c, (_, heading, _) in enumerate(columns):
@@ -55,7 +16,7 @@ def _table(ws, f, top, data: dict, columns) -> None:
     for c, (key, _, fmt) in enumerate(columns):
         col = data[key]
         for i, v in enumerate(col):
-            _write_value(ws, top + 1 + i, c, v.item() if hasattr(v, "item") else v, f[fmt])
+            write_value(ws, top + 1 + i, c, v.item() if hasattr(v, "item") else v, f[fmt])
     ws.set_row(top, 48)
     ws.set_column(0, 0, 10)
     ws.set_column(1, 1, 18)
@@ -79,11 +40,13 @@ def _triangle(wb, f, name: str, title: str, tri: np.ndarray, n_rows: int, n_cols
 
 def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name: str,
                           filename: str = "") -> bytes:
-    buf = io.BytesIO()
-    wb = xlsxwriter.Workbook(buf, {"in_memory": True, "nan_inf_to_errors": True,
-                                   "strings_to_formulas": False, "strings_to_urls": False})
-    f = _formats(wb)
-    n, mb = res.n, int(res.config["max_bucket"])
+    # in memory: Chart_Data is written column block by column block, not top to bottom
+    return build_xlsx(lambda wb: _fill(wb, res, dataset_name, scenario_name, filename), streaming=False)
+
+
+def _fill(wb, res: ExtensionResult, dataset_name: str, scenario_name: str, filename: str) -> None:
+    f = formats(wb)
+    n = res.n
     cols = int(res.shape_stats["tri_width"])
     p, cfg, avg = res.params, res.config, res.averages
     has_logn = avg.get("lgd_logn") is not None and math.isfinite(avg["lgd_logn"])
@@ -97,23 +60,23 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
     ws.write(r, 0, "Exposure-weighted average over all TermSteps", f["bold"])
     for i, (key, label) in enumerate(AVERAGE_LABELS):
         ws.write(r + 1 + i, 0, label)
-        _write_value(ws, r + 1 + i, 1, avg.get(key), f["lgd"])
+        write_value(ws, r + 1 + i, 1, avg.get(key), f["lgd"])
     r += len(AVERAGE_LABELS) + 1
     ws.write(r, 0, "Tie-out range (max / min)")
-    _write_value(ws, r, 1, avg.get("tie_max"), f["sci"])
-    _write_value(ws, r, 2, avg.get("tie_min"), f["sci"])
+    write_value(ws, r, 1, avg.get("tie_max"), f["sci"])
+    write_value(ws, r, 2, avg.get("tie_min"), f["sci"])
     r += 2
     ws.write(r, 0, "Parameters (scenario with this zip's overrides applied)", f["bold"])
     for key, label in PARAM_LABELS:
         r += 1
         ws.write(r, 0, label)
-        _write_value(ws, r, 1, p.get(key))
+        write_value(ws, r, 1, p.get(key))
     r += 2
     ws.write(r, 0, "Derived", f["bold"])
     for key, label in CONFIG_LABELS:
         r += 1
         ws.write(r, 0, label)
-        _write_value(ws, r, 1, cfg.get(key))
+        write_value(ws, r, 1, cfg.get(key))
     r += 2
     ws.write(r, 0, "LGD to Target TermStep", f["bold"])
     for key, label in [("validation_max", "Max validation (own row − derived)"),
@@ -121,7 +84,7 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
                        ("balance_factor_target", "Balance factor at Target TermStep (must stay > 0)")]:
         r += 1
         ws.write(r, 0, label)
-        _write_value(ws, r, 1, res.lgd_ts_summary.get(key), f["lgd"])
+        write_value(ws, r, 1, res.lgd_ts_summary.get(key), f["lgd"])
     r += 2
     ws.write(r, 0, "Warnings", f["bold"])
     if not res.warnings:
@@ -250,10 +213,3 @@ def build_values_workbook(res: ExtensionResult, dataset_name: str, scenario_name
             continue
         _triangle(wb, f, name, title + " (observed to the last credible bucket, then scale × shape)",
                   res.ext[k], n, cols, f["tri"])
-
-    wb.close()
-    return buf.getvalue()
-
-
-def cell(r: int, c: int) -> str:   # small helper used by tests
-    return xl_rowcol_to_cell(r, c)

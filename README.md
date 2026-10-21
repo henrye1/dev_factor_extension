@@ -78,7 +78,8 @@ Which database it uses depends on `.env`:
 | LastTS | empty | Empty = last observed TermStep |
 | EventType | Lifetime | Block of `lgd_recovery` used |
 | Discount rate | empty | Empty = the rate implied by each file |
-| Vintages | all | Last N years of each zip's own vintages, or vintages from a month (YYYY-MM) |
+| Vintages | all | Last N years ending with the report date, or vintages from a month (YYYY-MM) |
+| Report date | empty | Month (YYYY-MM) that "last N years" counts back from; empty = the last month in the zip's runoff data |
 
 ### The three tail methods
 
@@ -117,7 +118,12 @@ Each zip's `runoff_triangle.csv` holds the exposure of every default vintage (Co
 since default. The app reads it on upload, rebuilds the recovery triangle from it and checks that
 the rebuilt triangle reproduces `lgd_recovery.csv` to within rounding; only zips that pass can be
 filtered. A scenario (or a zip's override) can then choose which vintages feed the triangle: the
-last N years counted back from each zip's own latest vintage, or every vintage from a month. With
+last N years ending with the report date, or every vintage from a month. The report date is the last
+month observed in the zip's runoff data (the risk suite's LgdMaxDate, shown on upload and with every
+result) unless the scenario sets `report_date`. Before 20 October 2026 "last N years" counted back
+from the zip's newest vintage, so results stored on it before then are marked out of date once at
+start-up. The method is written up for model validation in
+`docs/LGD_Tail_Extension_Model_Validation_Documentation.pdf`. With
 a filter the "Original" LGD is the LGD of the rebuilt subset, labelled "LGD (vintages from …)",
 the formula workbook's `Raw_Debug` holds the rebuilt rows, and the project page marks the cell.
 Zips uploaded before 9 October 2026 hold no runoff data: drop the same zip on the project again
@@ -297,6 +303,7 @@ $py = "$env:USERPROFILE\.venvs\dev_factor_extension\Scripts\python.exe"
 | `scripts/supabase_setup.py` | Sets up the linked Supabase project and writes `.env` |
 | `scripts/smoke_test.py` | Checks a running app end to end through its API, then cleans up |
 | `docs/superpowers/` | Design specs (2 October: the app; 9 October: three methods and vintage windows) and the implementation plan |
+| `docs/LGD_Tail_Extension_Model_Validation_Documentation.pdf` | The method written up for model validation (20 October): stages, design choices, reconciliation to the validation workbook |
 
 The formula workbook differs from the hand-built ones in two ways. `Hazard_Obs` reads
 `Raw_Debug` by position through a `Raw_Index` sheet instead of one `SUMIFS` per cell, which

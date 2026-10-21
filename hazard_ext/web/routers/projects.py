@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from ...engine.applied import to_face
 from ...engine.curves import CurveError, parse_curve_file
 from ...engine.parse import ParseError, parse_zip
-from ..deps import Access, csrf_guard, current_user, get_db, project_access
+from ..deps import Access, csrf_guard, current_user, dataset_or_404, get_db, project_access
 from ..models import (iso, utcnow, CURVE_BASES, CURVE_KINDS, ROLES, ClientCurve, Dataset, Project,
                       ProjectMember, Result, Scenario, User)
 from ..runner import applied_curves, is_legacy_result, mark_stale
@@ -89,13 +89,18 @@ def list_projects(user: User = Depends(current_user), db: Session = Depends(get_
         rows = db.execute(
             select(Project, ProjectMember.role).join(ProjectMember, ProjectMember.project_id == Project.id)
             .where(ProjectMember.user_id == user.id).order_by(Project.name)).all()
-    out = []
-    for p, role in rows:
-        n_data = db.execute(select(func.count()).select_from(Dataset).where(Dataset.project_id == p.id)).scalar_one()
-        n_scen = db.execute(select(func.count()).select_from(Scenario).where(Scenario.project_id == p.id)).scalar_one()
-        out.append({"id": p.id, "name": p.name, "description": p.description, "role": role,
-                    "datasets": n_data, "scenarios": n_scen, "created_at": iso(p.created_at)})
-    return out
+    ids = [p.id for p, _ in rows]
+
+    def counts(model) -> dict[int, int]:        # one grouped query per table, not two per project
+        if not ids:
+            return {}
+        return dict(db.execute(select(model.project_id, func.count()).where(model.project_id.in_(ids))
+                               .group_by(model.project_id)).all())
+
+    n_data, n_scen = counts(Dataset), counts(Scenario)
+    return [{"id": p.id, "name": p.name, "description": p.description, "role": role,
+             "datasets": n_data.get(p.id, 0), "scenarios": n_scen.get(p.id, 0), "created_at": iso(p.created_at)}
+            for p, role in rows]
 
 
 @router.post("/projects", status_code=201)
@@ -291,17 +296,10 @@ class DatasetPatch(BaseModel):
     category: Optional[str] = None
 
 
-def _dataset(db: Session, pid: int, did: int) -> Dataset:
-    ds = db.get(Dataset, did)
-    if ds is None or ds.project_id != pid:
-        raise HTTPException(404, "Zip not found")
-    return ds
-
-
 @router.patch("/projects/{pid}/datasets/{did}")
 def patch_dataset(did: int, body: DatasetPatch, access: Access = Depends(project_access("editor")),
                   db: Session = Depends(get_db)):
-    ds = _dataset(db, access.project.id, did)
+    ds = dataset_or_404(db, access.project.id, did)
     if body.name is not None:
         name = _clean_name(body.name)
         clash = db.execute(select(Dataset).where(Dataset.project_id == ds.project_id, Dataset.name == name,
@@ -320,7 +318,7 @@ def patch_dataset(did: int, body: DatasetPatch, access: Access = Depends(project
 @router.delete("/projects/{pid}/datasets/{did}")
 def delete_dataset(did: int, request: Request, access: Access = Depends(project_access("editor")),
                    db: Session = Depends(get_db)):
-    ds = _dataset(db, access.project.id, did)
+    ds = dataset_or_404(db, access.project.id, did)
     key = ds.blob_key
     db.delete(ds)
     db.commit()

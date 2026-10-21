@@ -7,7 +7,7 @@ import { helpButton } from "./help.js";
 export const METHODS = { 1: "1 – Exponential", 2: "2 – Power law", 3: "3 – Log-normal" };
 export const SOLVERS = { lm: "Levenberg–Marquardt, weighted by bucket (as the client)", ols: "Log-linear least squares (hand-built workbooks)" };
 
-// kind: int | float | select | text | vintage ; blank: the field may be left empty
+// kind: int | float | select | text | month | vintage ; blank: the field may be left empty
 // A "vintage" field is one control that writes two parameters (vintage_years, vintage_start).
 export const FIELDS = [
   { group: "Horizon", name: "target_ts", label: "Target TermStep", kind: "int",
@@ -55,7 +55,9 @@ export const FIELDS = [
 
   { group: "Data", name: "vintages", label: "Vintages", kind: "vintage", blank: true,
     params: ["vintage_years", "vintage_start"],
-    hint: "Which default vintages feed the triangle: all of them, the last N years of each zip's own vintages, or vintages from a month. Needs the zip's runoff data." },
+    hint: "Which default vintages feed the triangle: all of them, the last N years ending with the report date, or vintages from a month. Needs the zip's runoff data." },
+  { group: "Data", name: "report_date", label: "Report date (YYYY-MM)", kind: "month", blank: true,
+    hint: "The month 'last N years' counts back from. Leave empty for the last month in each zip's runoff data (the risk suite's LgdMaxDate)." },
   { group: "Data", name: "event_type", label: "EventType", kind: "select",
     options: (ctx) => ctx.eventTypes.map((e) => [e, e]),
     hint: "Which block of lgd_recovery is used." },
@@ -103,7 +105,7 @@ function setDisabled(el, flag) {
 function vintageControl(value) {
   const mode = h("select", null,
     h("option", { value: "all" }, "All vintages"),
-    h("option", { value: "years" }, "Last N years of each zip's vintages"),
+    h("option", { value: "years" }, "Last N years to the report date"),
     h("option", { value: "date" }, "From a month"));
   const years = h("input", { type: "number", step: "1", min: "1", max: "50", placeholder: "years", "aria-label": "Number of years" });
   const start = h("input", { type: "month", "aria-label": "First vintage month" });
@@ -137,6 +139,10 @@ function vintageControl(value) {
 
 function control(f, value, ctx) {
   if (f.kind === "vintage") return vintageControl(value);
+  if (f.kind === "month") {
+    return h("input", { type: "month", value: value === null || value === undefined ? "" : String(value),
+                        placeholder: f.blank ? "empty" : "" });
+  }
   if (f.kind === "select") {
     const sel = h("select");
     const opts = f.options(ctx);
@@ -158,6 +164,10 @@ function read(f, el) {
   if (raw === "") {
     if (f.blank) return null;
     throw new Error(`${f.label} cannot be empty`);
+  }
+  if (f.kind === "month") {
+    if (!/^\d{4}-\d{2}$/.test(raw)) throw new Error(`${f.label} must be a month written as YYYY-MM`);
+    return raw;
   }
   if (f.kind === "int") {
     const n = Number(raw);

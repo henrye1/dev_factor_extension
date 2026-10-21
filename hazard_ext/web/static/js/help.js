@@ -69,7 +69,7 @@ export const CONCEPT_HELP = {
     text: [
       "lgd_recovery.csv is one triangle over every default vintage in the file. The same zip carries runoff_triangle.csv with the exposure of each default vintage (CohortDate) month by month, from which the app rebuilds the triangle for any set of vintages: for a TermStep and bucket it sums, over the kept vintages observed at that bucket, the exposure at the TermStep and the balances before and after the bucket.",
       "On upload the app rebuilds the triangle with every vintage and checks it against lgd_recovery.csv to within rounding. Only zips that pass can be filtered; the project page shows the vintage range of each zip. Zips uploaded before this was added hold no runoff data and must be uploaded again.",
-      "A scenario chooses the vintages once: the last N years of each zip's own vintages (so one scenario stays dynamic across zips) or vintages from a month. With a filter the 'Original' LGD is the LGD of the rebuilt subset, not the file's figure, and is labelled 'LGD (vintages from …)'. The observed triangle is shallower, so more of each row is fitted tail, and a Rand MinExposure cuts credibility earlier on the smaller book; a percentage MinExposure follows the subset.",
+      "A scenario chooses the vintages once: the last N years ending with the report date (so one scenario stays dynamic across zips) or vintages from a month. The report date is the last month observed in the zip's runoff data, the risk suite's LgdMaxDate, unless the scenario gives one; the window is named 'from … to …' wherever it is reported. With a filter the 'Original' LGD is the LGD of the rebuilt subset, not the file's figure, and is labelled 'LGD (vintages from …)'. The observed triangle is shallower, so more of each row is fitted tail, and a Rand MinExposure cuts credibility earlier on the smaller book; a percentage MinExposure follows the subset.",
     ],
   },
   derived: {
@@ -175,9 +175,15 @@ export const PARAM_HELP = {
   },
   vintages: {
     title: "Vintages",
-    what: "Which default vintages (CohortDate in runoff_triangle.csv) feed the recovery triangle: all of them, the last N years counted back from each zip's own latest vintage, or every vintage from a chosen month.",
+    what: "Which default vintages (CohortDate in runoff_triangle.csv) feed the recovery triangle: all of them, the last N years ending with the report date, or every vintage from a chosen month.",
     def: "All vintages, which is the file's own triangle.",
-    effect: "A shorter window drops old vintages: fewer cohorts, less exposure and a shallower observed triangle, so more of each row is fitted tail. 'Last N years' resolves per zip, so the same scenario gives each zip its own start month. The run fails with a clear message on a zip whose runoff data is missing or does not reproduce its file; upload that zip again.",
+    effect: "A shorter window drops old vintages: fewer cohorts, less exposure and a shallower observed triangle, so more of each row is fitted tail. 'Last N years' is the N × 12 months ending with the report month, so zips with different report dates get different start months. The run fails with a clear message on a zip whose runoff data is missing or does not reproduce its file; upload that zip again.",
+  },
+  report_date: {
+    title: "Report date",
+    what: "The month that 'last N years' counts back from, written YYYY-MM. Empty means the last month observed in each zip's runoff data, which is the risk suite's LgdMaxDate.",
+    def: "Empty.",
+    effect: "Only matters with a 'last N years' vintage window. Moving the report date moves the window by the same amount. A zip whose newest default vintage is older than the report date still gets a window ending at the report date, not at that vintage; before 20 October 2026 the window counted back from the zip's newest vintage.",
   },
   gamma_override: {
     title: "γ override",
